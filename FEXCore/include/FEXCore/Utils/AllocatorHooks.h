@@ -6,7 +6,11 @@
 
 #ifndef _WIN32
 #include <stdlib.h>
+#ifdef __APPLE__
+#include <malloc/malloc.h>
+#else
 #include <malloc.h>
+#endif
 #include <sys/mman.h>
 #else
 #define NTDDI_VERSION 0x0A000005
@@ -113,19 +117,39 @@ FEX_DEFAULT_VISIBILITY extern void VirtualName(const char* Name, void* Ptr, size
 
 // All commit parameters are ignored here, they are unnecessary as Linux supports overcommit
 
+#ifdef __APPLE__
+// Darwin port: executable allocations must be MAP_JIT (plain RWX mmap fails with EACCES on Apple Silicon). The
+// region is writable only through a JITWriteScope on the calling thread, see FEXCore/Utils/JITWriteScope.h.
+#define FEX_VIRTUALALLOC_EXTRA_FLAGS(Execute) ((Execute) ? MAP_JIT : 0)
+#else
+#define FEX_VIRTUALALLOC_EXTRA_FLAGS(Execute) 0
+#endif
+
 inline void* VirtualAlloc(size_t Size, bool Execute = false, bool Commit = true) {
-  return FEXCore::Allocator::mmap(nullptr, Size, PROT_READ | PROT_WRITE | (Execute ? PROT_EXEC : 0), MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  return FEXCore::Allocator::mmap(nullptr, Size, PROT_READ | PROT_WRITE | (Execute ? PROT_EXEC : 0),
+                                  MAP_PRIVATE | MAP_ANONYMOUS | FEX_VIRTUALALLOC_EXTRA_FLAGS(Execute), -1, 0);
 }
 
 inline void* VirtualAlloc(void* Base, size_t Size, bool Execute = false, bool Commit = true) {
-  return FEXCore::Allocator::mmap(Base, Size, PROT_READ | PROT_WRITE | (Execute ? PROT_EXEC : 0), MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  return FEXCore::Allocator::mmap(Base, Size, PROT_READ | PROT_WRITE | (Execute ? PROT_EXEC : 0),
+                                  MAP_PRIVATE | MAP_ANONYMOUS | FEX_VIRTUALALLOC_EXTRA_FLAGS(Execute), -1, 0);
 }
 
 inline void VirtualFree(void* Ptr, size_t Size) {
   FEXCore::Allocator::munmap(Ptr, Size);
 }
 inline void VirtualDontNeed(void* Ptr, size_t Size, bool Recommit = true) {
+#ifdef __APPLE__
+  // Linux MADV_DONTNEED turns the range back into zero pages. On Darwin MADV_DONTNEED is only a hint and leaves the
+  // contents, which the lookup cache, the call-ret stack and the bitmap allocators do not tolerate. MADV_ZERO zeroes
+  // the resident pages in place. It fails on ranges that are not read/write, so fall back to a fresh anonymous
+  // mapping (which also restores PROT_READ|PROT_WRITE, the only protection FEX uses with this call).
+  if (::madvise(reinterpret_cast<void*>(Ptr), Size, MADV_ZERO) != 0) {
+    ::mmap(Ptr, Size, PROT_READ | PROT_WRITE, MAP_FIXED | MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  }
+#else
   ::madvise(reinterpret_cast<void*>(Ptr), Size, MADV_DONTNEED);
+#endif
 }
 inline bool VirtualProtect(void* Ptr, size_t Size, ProtectOptions options) {
   int prot {PROT_NONE};
@@ -143,7 +167,9 @@ inline bool VirtualProtect(void* Ptr, size_t Size, ProtectOptions options) {
 }
 
 inline void VirtualTHPControl(const void* Ptr, size_t Size, THPControl Control) {
+#ifndef __APPLE__
   ::madvise(const_cast<void*>(Ptr), Size, Control == THPControl::Enable ? MADV_HUGEPAGE : MADV_NOHUGEPAGE);
+#endif
 }
 
 #endif

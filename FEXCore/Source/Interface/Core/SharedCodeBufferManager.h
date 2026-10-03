@@ -68,7 +68,7 @@ struct CodeBuffer {
 
   // Returns the total number of bytes available for storing code
   size_t UsableSize() const {
-    return AllocatedSize - FEXCore::Utils::FEX_PAGE_SIZE;
+    return AllocatedSize - FEXCore::Utils::FEX_HOST_PAGE_SIZE;
   }
 
   // Returns the full size of the buffer, including the guard page.

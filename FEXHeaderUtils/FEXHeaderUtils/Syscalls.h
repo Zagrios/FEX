@@ -7,7 +7,11 @@
 #include <sched.h>
 #include <signal.h>
 #include <stdio.h>
-#ifndef _WIN32
+#if defined(__APPLE__)
+#include <errno.h>
+#include <pthread.h>
+#include <sys/random.h>
+#elif !defined(_WIN32)
 #include <syscall.h>
 #else
 #include <processthreadsapi.h>
@@ -51,7 +55,61 @@ namespace FHU::Syscalls {
 #define SYS_pidfd_open 434
 #endif
 
-#ifndef _WIN32
+#if defined(__APPLE__)
+// Darwin port. macOS has no raw system call interface that is stable for applications, so each helper uses the
+// public replacement. Calls with no Darwin equivalent fail with ENOSYS rather than pretending to work.
+inline int32_t getcpu(uint32_t* cpu, uint32_t* node) {
+  // No CPU number API exists for user space on macOS. Report CPU 0 (measured: sched_getcpu is absent).
+  if (cpu) {
+    *cpu = 0;
+  }
+  if (node) {
+    *node = 0;
+  }
+  return 0;
+}
+
+inline int32_t gettid() {
+  uint64_t tid = 0;
+  pthread_threadid_np(nullptr, &tid);
+  return static_cast<int32_t>(tid);
+}
+
+inline int32_t tgkill(pid_t tgid, pid_t tid, int sig) {
+  // A Mach thread id cannot be turned into a pthread_t. The host keeps its own table and uses pthread_kill.
+  errno = ENOSYS;
+  return -1;
+}
+
+inline int32_t statx(int dirfd, const char* pathname, int32_t flags, uint32_t mask, void* statxbuf) {
+  errno = ENOSYS;
+  return -1;
+}
+
+inline int32_t renameat2(int olddirfd, const char* oldpath, int newdirfd, const char* newpath, unsigned int flags) {
+  errno = ENOSYS;
+  return -1;
+}
+
+inline int32_t pidfd_open(pid_t pid, unsigned int flags) {
+  errno = ENOSYS;
+  return -1;
+}
+
+inline ssize_t getrandom(void* buf, size_t buflen, unsigned int flags) {
+  // getentropy() is limited to 256 bytes per call.
+  size_t done = 0;
+  auto* out = static_cast<uint8_t*>(buf);
+  while (done < buflen) {
+    const size_t chunk = buflen - done > 256 ? 256 : buflen - done;
+    if (::getentropy(out + done, chunk) != 0) {
+      return -1;
+    }
+    done += chunk;
+  }
+  return static_cast<ssize_t>(done);
+}
+#elif !defined(_WIN32)
 inline int32_t getcpu(uint32_t* cpu, uint32_t* node) {
   // Third argument is unused
 #if defined(HAS_SYSCALL_GETCPU) && HAS_SYSCALL_GETCPU

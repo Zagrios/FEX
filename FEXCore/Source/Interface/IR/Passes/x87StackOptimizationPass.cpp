@@ -472,7 +472,13 @@ inline Ref X87StackOptimization::LoadStackValueAtOffset_Slow(uint8_t Offset) {
   OrderedNode* TopOffsetAddress = GetOffsetTopAddressWithCache_Slow(Offset);
   auto Size = ReducedPrecisionMode ? OpSize::i64Bit : OpSize::i128Bit;
   if (!TopValueCache[Offset]) {
+#ifdef __APPLE__
+    // Darwin port: context accesses must not go through LoadMem, which applies the guest base offset.
+    (void)TopOffsetAddress;
+    TopValueCache[Offset] = IREmit->_LoadContextIndexed(GetOffsetTopWithCache_Slow(Offset), Size, MMBaseOffset(), 16, RegClass::FPR);
+#else
     TopValueCache[Offset] = IREmit->_LoadMemFPR(Size, TopOffsetAddress, IREmit->_InlineConstant(MMBaseOffset()), Size, MemOffsetType::SXTX, 1);
+#endif
   }
   return TopValueCache[Offset];
 }
@@ -618,8 +624,12 @@ void X87StackOptimization::FlushCachedRegs() {
   auto Size = ReducedPrecisionMode ? OpSize::i64Bit : OpSize::i128Bit;
   for (size_t i = 0; i < FlushValuesPending.size(); i++) {
     if (FlushValuesPending[i]) {
+#ifdef __APPLE__
+      IREmit->_StoreContextIndexed(TopValueCache[i], GetOffsetTopWithCache_Slow(i), Size, MMBaseOffset(), 16, RegClass::FPR);
+#else
       OrderedNode* TopOffsetAddress = GetOffsetTopAddressWithCache_Slow(i);
       IREmit->_StoreMemFPR(Size, TopValueCache[i], TopOffsetAddress, IREmit->_InlineConstant(MMBaseOffset()), Size, MemOffsetType::SXTX, 1);
+#endif
       // store
       FlushValuesPending[i] = false;
     }

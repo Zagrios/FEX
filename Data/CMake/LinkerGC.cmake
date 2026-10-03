@@ -7,9 +7,15 @@
 
 macro(LinkerGC target)
   if (CMAKE_BUILD_TYPE MATCHES "RELEASE")
-    target_link_options(${target} PRIVATE
-      "LINKER:--gc-sections"
-      "LINKER:--strip-all"
-      "LINKER:--as-needed")
+    if (APPLE)
+      # Apple ld64 has no --gc-sections/--strip-all/--as-needed; -dead_strip is the equivalent of --gc-sections.
+      target_link_options(${target} PRIVATE
+        "LINKER:-dead_strip")
+    else()
+      target_link_options(${target} PRIVATE
+        "LINKER:--gc-sections"
+        "LINKER:--strip-all"
+        "LINKER:--as-needed")
+    endif()
   endif()
 endmacro()

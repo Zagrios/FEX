@@ -31,6 +31,7 @@ $end_info$
 #include "Utils/Allocator.h"
 #include "Utils/Allocator/HostAllocator.h"
 #include "Utils/crc32.h"
+#include <FEXCore/Utils/GuestBase.h>
 #include <FEXCore/Utils/SpinWaitLock.h>
 #include "Utils/variable_length_integer.h"
 
@@ -183,6 +184,32 @@ uint64_t ContextImpl::RestoreRIPFromHostPC(FEXCore::Core::InternalThreadState* T
 
   // Fallback to what is stored in the RIP currently.
   return Frame->State.rip;
+}
+
+bool ContextImpl::IsHostPCAtGuestInstructionBoundary(FEXCore::Core::InternalThreadState* Thread, uint64_t HostPC, uint64_t* RIP) {
+  const auto Frame = Thread->CurrentFrame;
+  const uint64_t BlockBegin = Frame->State.InlineJITBlockHeader;
+  auto [InlineHeader, InlineTail] = GetFrameBlockInfo(Frame);
+  if (!InlineHeader || HostPC < BlockBegin || HostPC >= BlockBegin + InlineTail->Size) {
+    return false;
+  }
+  auto RIPEntry = reinterpret_cast<const uint8_t*>(Frame->State.InlineJITBlockHeader + InlineHeader->OffsetToBlockTail + InlineTail->OffsetToRIPEntries);
+  uint64_t EntryHostPC = BlockBegin;
+  uint64_t EntryGuestRIP = InlineTail->RIP;
+  for (uint32_t i = 0; i < InlineTail->NumberOfRIPEntries; ++i) {
+    auto Offset = FEXCore::Utils::vl64pair::Decode(RIPEntry);
+    RIPEntry += Offset.Size;
+    EntryHostPC += Offset.IntegerARMPC;
+    EntryGuestRIP += Offset.IntegerX86RIP;
+    if (EntryHostPC == HostPC) {
+      *RIP = EntryGuestRIP;
+      return true;
+    }
+    if (EntryHostPC > HostPC) {
+      break;
+    }
+  }
+  return false;
 }
 
 uint32_t ContextImpl::ReconstructCompactedEFLAGS(FEXCore::Core::InternalThreadState* Thread, bool WasInJIT, const uint64_t* HostGPRs,
@@ -645,7 +672,8 @@ ContextImpl::GenerateIR(FEXCore::Core::InternalThreadState* Thread, uint64_t Gue
           auto ExistingCodePtr = reinterpret_cast<uint8_t*>(Block.Entry + BlockInstructionsLength);
           auto InstAddressReg = Thread->OpDispatcher->_EntrypointOffset(GPRSize, InstAddress - GuestRIP);
 
-          auto Value = FEXCore::Utils::crc32(ExistingCodePtr, DecodedInfo->InstSize);
+          // The CRC is computed on the host copy of the guest code (ValidateCode adds the guest base in the JIT too).
+          auto Value = FEXCore::Utils::crc32(static_cast<const uint8_t*>(FEXCore::G2H(Block.Entry + BlockInstructionsLength)), DecodedInfo->InstSize);
           auto CRC = WantsDiskCachePatching ?
                        Thread->OpDispatcher->_PatchableGuestCRC(IR::OpSize::i64Bit, Value, (int64_t)ExistingCodePtr, DecodedInfo->InstSize) :
                        Thread->OpDispatcher->Constant(Value);
@@ -800,7 +828,9 @@ ContextImpl::CompileCodeResult ContextImpl::CompileCode(FEXCore::Core::InternalT
 
   // Generate IR + Meta Info
   auto [IRView, TotalInstructions, TotalInstructionsLength, StartAddr, Length, NeedsAddGuestCodeRanges] =
-    GenerateIR(Thread, GuestRIP, Config.GDBSymbols(), MaxInst);
+    // Darwin port: a RIP table entry for EVERY guest instruction (not only the ones with side effects), so that an
+    // asynchronous signal can be delivered at an exact instruction boundary (IsHostPCAtGuestInstructionBoundary).
+    GenerateIR(Thread, GuestRIP, true, MaxInst);
   if (!IRView) {
     Thread->FrontendDecoder->ValidateDisownedOrFree();
     Thread->OpDispatcher->ValidateDisownedOrFree();

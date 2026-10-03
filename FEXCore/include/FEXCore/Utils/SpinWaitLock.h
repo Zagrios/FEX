@@ -101,6 +101,14 @@ static inline uint64_t LoadExclusive(uint64_t* Futex) {
   return Result;
 }
 
+#ifdef __APPLE__
+// Darwin port: uint64_t is `unsigned long long` while size_t and uintptr_t are `unsigned long`, so templates called
+// with size_t* do not match the uint64_t overloads. Both are 64 bits wide, forward to the uint64_t versions.
+static inline unsigned long LoadExclusive(unsigned long* Futex) {
+  return LoadExclusive(reinterpret_cast<uint64_t*>(Futex));
+}
+#endif
+
 static inline uint8_t WFELoadAtomic(uint8_t* Futex) {
   uint8_t Result {};
   __asm volatile(SPINLOOP_8BIT : [Result] "=r"(Result), [Futex] "+r"(Futex)::"memory");
@@ -128,6 +136,12 @@ static inline uint64_t WFELoadAtomic(uint64_t* Futex) {
 
   return Result;
 }
+
+#ifdef __APPLE__
+static inline unsigned long WFELoadAtomic(unsigned long* Futex) {
+  return WFELoadAtomic(reinterpret_cast<uint64_t*>(Futex));
+}
+#endif
 
 template<typename Pred, typename T>
 static inline void WaitPred(T* Futex, T ComparisonValue) {

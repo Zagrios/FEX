@@ -7,7 +7,7 @@
 #include <FEXCore/Utils/LogManager.h>
 #include <FEXCore/Utils/MathUtils.h>
 
-#ifndef _WIN32
+#if !defined(_WIN32) && !defined(__APPLE__)
 #include <FEXCore/Utils/PrctlUtils.h>
 #endif
 
@@ -21,12 +21,19 @@ CodeBuffer::CodeBuffer(size_t Size, bool ShouldBeNamed)
   Ptr = static_cast<uint8_t*>(FEXCore::Allocator::VirtualAlloc(Size, true));
   LOGMAN_THROW_A_FMT(!!Ptr, "Couldn't allocate code buffer");
 
+#ifndef __APPLE__
   // Protect the last page of the allocated buffer to trigger SIGSEGV on write access
-  uintptr_t LastPageAddr = AlignDown(reinterpret_cast<uintptr_t>(Ptr) + Size - 1, FEXCore::Utils::FEX_PAGE_SIZE);
-  if (!FEXCore::Allocator::VirtualProtect(reinterpret_cast<void*>(LastPageAddr), FEXCore::Utils::FEX_PAGE_SIZE,
+  // Darwin port: the guard page is one *host* page (16 KiB), mprotect() works on host pages only.
+  uintptr_t LastPageAddr = AlignDown(reinterpret_cast<uintptr_t>(Ptr) + Size - 1, FEXCore::Utils::FEX_HOST_PAGE_SIZE);
+  if (!FEXCore::Allocator::VirtualProtect(reinterpret_cast<void*>(LastPageAddr), FEXCore::Utils::FEX_HOST_PAGE_SIZE,
                                           FEXCore::Allocator::ProtectOptions::None)) {
     LogMan::Msg::EFmt("Failed to mprotect last page of code buffer.");
   }
+#else
+  // Darwin port: mprotect() on a MAP_JIT region fails with EACCES for every protection (measured, see
+  // evidence/fexcore-darwin/probes/probe-jit2-001.log), so the trailing guard page cannot be armed. The last host page is
+  // still excluded from UsableSize(), and AtomicAllocateBuffer() bounds every allocation against CodeBufferEnd.
+#endif
 
   if (ShouldBeNamed) {
     FEXCore::Allocator::VirtualName("FEXMemJIT", Ptr, Size);
@@ -57,7 +64,7 @@ SharedCodeBufferManager::SharedCodeBufferManager() {
 }
 
 fextl::shared_ptr<CodeBuffer> SharedCodeBufferManager::AllocateNew(size_t Size) {
-#ifndef _WIN32
+#if !defined(_WIN32) && !defined(__APPLE__)
   // MDWE (Memory-Deny-Write-Execute) is a new Linux 6.3 feature.
   // It's equivalent to systemd's `MemoryDenyWriteExecute` but implemented entirely in the kernel.
   //

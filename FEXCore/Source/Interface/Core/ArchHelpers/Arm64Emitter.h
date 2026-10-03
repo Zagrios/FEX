@@ -47,6 +47,11 @@ constexpr auto REG_AF = ARMEmitter::Reg::r27;
 
 constexpr auto REG_CALLRET_SP = ARMEmitter::XReg::x25;
 
+#ifdef __APPLE__
+// Darwin port: reserved register holding FEXCore::GuestBase. Callee saved in AAPCS64, reloaded by FillStaticRegs.
+constexpr auto GUESTBASE = ARMEmitter::XReg::x24;
+#endif
+
 // Vector temporaries
 constexpr auto VTMP1 = ARMEmitter::VReg::v0;
 constexpr auto VTMP2 = ARMEmitter::VReg::v1;

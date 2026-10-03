@@ -8,6 +8,7 @@ $end_info$
 
 #include "Interface/Context/Context.h"
 #include "Interface/Core/Frontend.h"
+#include <FEXCore/Utils/GuestBase.h>
 #include "Interface/Core/OpcodeDispatcher.h"
 #include "Interface/Core/X86Tables/X86Tables.h"
 #include "Interface/Core/LookupCache.h"
@@ -1368,7 +1369,8 @@ const Decoder::DecodeStream Decoder::AdjustAddrForSpecialRegion(const uint8_t* _
 
   return DecodeStream {
     .InstStream = _InstStream - EntryPoint + RIP,
-    .AdjustedInstStream = _InstStream - EntryPoint + RIP,
+    // Darwin port: the bytes of guest RIP live at GuestBase + RIP.
+    .AdjustedInstStream = static_cast<const uint8_t*>(FEXCore::G2H(RIP)),
   };
 }
 

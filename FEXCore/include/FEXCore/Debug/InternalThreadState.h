@@ -87,7 +87,7 @@ struct UnalignedExclusiveStore {
   uint8_t Size;
 };
 
-struct alignas(FEXCore::Utils::FEX_PAGE_SIZE) InternalThreadState : public FEXCore::Allocator::FEXAllocOperators {
+struct alignas(FEXCore::Utils::FEX_HOST_PAGE_SIZE) InternalThreadState : public FEXCore::Allocator::FEXAllocOperators {
   FEXCore::Core::CpuStateFrame* const CurrentFrame = &BaseFrameState;
 
   FEXCore::Context::Context* const CTX;
@@ -122,7 +122,8 @@ struct alignas(FEXCore::Utils::FEX_PAGE_SIZE) InternalThreadState : public FEXCo
   FEXCore::Core::CpuStateFrame BaseFrameState {};
 
   // Can be reprotected as RO to trigger an interrupt at generated code block entrypoints
-  alignas(FEXCore::Utils::FEX_PAGE_SIZE) uint8_t InterruptFaultPage[FEXCore::Utils::FEX_PAGE_SIZE];
+  // Darwin port: this page is mprotect()ed by the host, so it is exactly one host page.
+  alignas(FEXCore::Utils::FEX_HOST_PAGE_SIZE) uint8_t InterruptFaultPage[FEXCore::Utils::FEX_HOST_PAGE_SIZE];
 };
 static_assert(std::is_standard_layout_v<FEXCore::Core::InternalThreadState>);
 // Maximum unsigned-offset store range for fault page.

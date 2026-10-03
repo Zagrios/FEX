@@ -153,6 +153,7 @@ public:
   uint64_t GetGuestBlockEntry(FEXCore::Core::InternalThreadState* Thread) override;
 
   uint64_t RestoreRIPFromHostPC(FEXCore::Core::InternalThreadState* Thread, uint64_t HostPC) override;
+  bool IsHostPCAtGuestInstructionBoundary(FEXCore::Core::InternalThreadState* Thread, uint64_t HostPC, uint64_t* RIP) override;
   uint32_t ReconstructCompactedEFLAGS(FEXCore::Core::InternalThreadState* Thread, bool WasInJIT, const uint64_t* HostGPRs, uint64_t PSTATE) override;
   void SetFlagsFromCompactedEFLAGS(FEXCore::Core::InternalThreadState* Thread, uint32_t EFLAGS) override;
 

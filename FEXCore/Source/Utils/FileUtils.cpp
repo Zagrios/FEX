@@ -23,6 +23,16 @@ extern "C" NTSTATUS RtlUnicodeToUTF8N(OUT PCHAR UTF8StringDestination, IN ULONG 
                                       OUT PULONG UTF8StringActualByteCount, IN PCWCH UnicodeStringSource, IN ULONG UnicodeStringByteCount);
 #endif
 
+#ifdef __APPLE__
+// Darwin port: no getdents64(). __getdirentries64 is the libSystem call behind readdir(); it fills `struct dirent`
+// records (64-bit inode layout), which is the layout the loops below walk.
+extern "C" int __getdirentries64(int, void*, size_t, off_t*);
+static inline ssize_t getdents64(int fd, void* Buffer, size_t Size) {
+  off_t Base = 0;
+  return ::__getdirentries64(fd, Buffer, Size, &Base);
+}
+#endif
+
 namespace FEXCore::FileUtils {
 #ifndef _WIN32
 static inline bool unlinkat(int fd, const char* path, bool dir) {

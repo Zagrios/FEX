@@ -705,7 +705,7 @@ DEF_OP(LoadMem) {
   const auto Op = IROp->C<IR::IROp_LoadMem>();
   const auto OpSize = IROp->Size;
 
-  const auto MemReg = GetReg(Op->Addr);
+  const auto MemReg = MemPtr(Op->Addr, TMP1);
   const auto MemSrc = GenerateMemOperand(OpSize, MemReg, Op->Offset, Op->OffsetType, Op->OffsetScale);
 
   if (Op->Class == IR::RegClass::GPR) {
@@ -740,7 +740,7 @@ DEF_OP(LoadMem) {
 
 DEF_OP(LoadMemPair) {
   const auto Op = IROp->C<IR::IROp_LoadMemPair>();
-  const auto Addr = GetReg(Op->Addr);
+  const auto Addr = MemPtr(Op->Addr, TMP1);
 
   if (Op->Class == IR::RegClass::GPR) {
     const auto Dst1 = GetReg(Op->OutValue1);
@@ -768,7 +768,7 @@ DEF_OP(LoadMemTSO) {
   const auto Op = IROp->C<IR::IROp_LoadMemTSO>();
   const auto OpSize = IROp->Size;
 
-  const auto MemReg = GetReg(Op->Addr);
+  const auto MemReg = MemPtr(Op->Addr, TMP1);
 
   if (Op->Class == IR::RegClass::GPR) {
     LOGMAN_THROW_A_FMT(Op->Offset.IsInvalid() || CTX->HostFeatures.SupportsTSOImm9, "unexpected offset");
@@ -866,7 +866,7 @@ DEF_OP(VLoadVectorMasked) {
 
   const auto Dst = GetVReg(Node);
   const auto MaskReg = GetVReg(Op->Mask);
-  const auto MemReg = GetReg(Op->Addr);
+  const auto MemReg = MemPtr(Op->Addr, TMP3);
 
   if (HostSupportsSVE128 || HostSupportsSVE256) {
     const auto MemSrc = GenerateSVEMemOperand(OpSize, MemReg, Op->Offset, Op->OffsetType, Op->OffsetScale);
@@ -969,7 +969,7 @@ DEF_OP(VStoreVectorMasked) {
 
   const auto RegData = GetVReg(Op->Data);
   const auto MaskReg = GetVReg(Op->Mask);
-  const auto MemReg = GetReg(Op->Addr);
+  const auto MemReg = MemPtr(Op->Addr, TMP3);
   if (HostSupportsSVE128 || HostSupportsSVE256) {
     const auto MemDst = GenerateSVEMemOperand(OpSize, MemReg, Op->Offset, Op->OffsetType, Op->OffsetScale);
 
@@ -1148,6 +1148,9 @@ void Arm64JITCore::Emulate128BitGather(IR::OpSize Size, IR::OpSize ElementSize, 
       }
     }
 
+#ifdef FEX_GUEST_BASE
+    add(ARMEmitter::Size::i64Bit, TempMemReg, TempMemReg, GUESTBASE, ARMEmitter::ShiftType::LSL, 0);
+#endif
     // Now that the address is calculated. Do the load.
     switch (ElementSize) {
     case IR::OpSize::i8Bit: ld1<ARMEmitter::SubRegSize::i8Bit>(ResultReg.Q(), i, TempMemReg); break;
@@ -1355,7 +1358,7 @@ DEF_OP(VLoadVectorElement) {
 
   const auto Dst = GetVReg(Node);
   const auto DstSrc = GetVReg(Op->DstSrc);
-  const auto MemReg = GetReg(Op->Addr);
+  const auto MemReg = MemPtr(Op->Addr, TMP1);
 
   LOGMAN_THROW_A_FMT(ElementSize == IR::OpSize::i8Bit || ElementSize == IR::OpSize::i16Bit || ElementSize == IR::OpSize::i32Bit ||
                        ElementSize == IR::OpSize::i64Bit || ElementSize == IR::OpSize::i128Bit,
@@ -1392,7 +1395,7 @@ DEF_OP(VStoreVectorElement) {
   const auto ElementSize = IROp->ElementSize;
 
   const auto Value = GetVReg(Op->Value);
-  const auto MemReg = GetReg(Op->Addr);
+  const auto MemReg = MemPtr(Op->Addr, TMP1);
 
   LOGMAN_THROW_A_FMT(ElementSize == IR::OpSize::i8Bit || ElementSize == IR::OpSize::i16Bit || ElementSize == IR::OpSize::i32Bit ||
                        ElementSize == IR::OpSize::i64Bit || ElementSize == IR::OpSize::i128Bit,
@@ -1427,7 +1430,7 @@ DEF_OP(VBroadcastFromMem) {
   const auto ElementSize = IROp->ElementSize;
 
   const auto Dst = GetVReg(Node);
-  const auto MemReg = GetReg(Op->Address);
+  const auto MemReg = MemPtr(Op->Address, TMP1);
 
   LOGMAN_THROW_A_FMT(ElementSize == IR::OpSize::i8Bit || ElementSize == IR::OpSize::i16Bit || ElementSize == IR::OpSize::i32Bit ||
                        ElementSize == IR::OpSize::i64Bit || ElementSize == IR::OpSize::i128Bit,
@@ -1466,6 +1469,25 @@ DEF_OP(VBroadcastFromMem) {
 }
 
 DEF_OP(Push) {
+#ifdef FEX_GUEST_BASE
+  // Darwin port: guest SP is a guest address; no writeback addressing on it. Store at GUESTBASE + new SP.
+  const auto Op = IROp->C<IR::IROp_Push>();
+  const auto ValueSize = IR::OpSizeToSize(Op->ValueSize);
+  const auto Src = GetReg(Op->Value);
+  const auto AddrSrc = GetReg(Op->Addr);
+  const auto Dst = GetReg(Node);
+
+  sub(ARMEmitter::Size::i64Bit, TMP1, AddrSrc, ValueSize);
+  const ARMEmitter::ExtendedMemOperand Mem(GUESTBASE, TMP1, ARMEmitter::ExtendedType::LSL_64, 0);
+  switch (ValueSize) {
+  case 1: strb(Src.W(), Mem); break;
+  case 2: strh(Src.W(), Mem); break;
+  case 4: str(Src.W(), Mem); break;
+  case 8: str(Src.X(), Mem); break;
+  default: LOGMAN_MSG_A_FMT("Unhandled {} size: {}", __func__, ValueSize); break;
+  }
+  mov(ARMEmitter::Size::i64Bit, Dst, TMP1);
+#else
   const auto Op = IROp->C<IR::IROp_Push>();
   const auto ValueSize = IR::OpSizeToSize(Op->ValueSize);
   auto Src = GetReg(Op->Value);
@@ -1548,9 +1570,26 @@ DEF_OP(Push) {
     }
     }
   }
+#endif
 }
 
 DEF_OP(PushTwo) {
+#ifdef FEX_GUEST_BASE
+  const auto Op = IROp->C<IR::IROp_PushTwo>();
+  const auto ValueSize = IR::OpSizeToSize(Op->ValueSize);
+  auto Src1 = GetReg(Op->Value1);
+  auto Src2 = GetReg(Op->Value2);
+  const auto Dst = GetReg(Op->Addr);
+
+  sub(ARMEmitter::Size::i64Bit, TMP1, Dst, 2 * ValueSize);
+  add(ARMEmitter::Size::i64Bit, TMP2, GUESTBASE, TMP1, ARMEmitter::ShiftType::LSL, 0);
+  switch (ValueSize) {
+  case 4: stp<ARMEmitter::IndexType::OFFSET>(Src1.W(), Src2.W(), TMP2, 0); break;
+  case 8: stp<ARMEmitter::IndexType::OFFSET>(Src1.X(), Src2.X(), TMP2, 0); break;
+  default: LOGMAN_MSG_A_FMT("Unhandled {} size: {}", __func__, ValueSize); break;
+  }
+  mov(ARMEmitter::Size::i64Bit, Dst, TMP1);
+#else
   const auto Op = IROp->C<IR::IROp_PushTwo>();
   const auto ValueSize = IR::OpSizeToSize(Op->ValueSize);
   auto Src1 = GetReg(Op->Value1);
@@ -1571,9 +1610,28 @@ DEF_OP(PushTwo) {
     break;
   }
   }
+#endif
 }
 
 DEF_OP(Pop) {
+#ifdef FEX_GUEST_BASE
+  const auto Op = IROp->C<IR::IROp_Pop>();
+  const auto Size = IR::OpSizeToSize(Op->Size);
+  const auto Addr = GetReg(Op->InoutAddr);
+  const auto Dst = GetReg(Op->OutValue);
+
+  LOGMAN_THROW_A_FMT(Dst != Addr, "Invalid");
+
+  const ARMEmitter::ExtendedMemOperand Mem(GUESTBASE, Addr.X(), ARMEmitter::ExtendedType::LSL_64, 0);
+  switch (Size) {
+  case 1: ldrb(Dst.W(), Mem); break;
+  case 2: ldrh(Dst.W(), Mem); break;
+  case 4: ldr(Dst.W(), Mem); break;
+  case 8: ldr(Dst.X(), Mem); break;
+  default: LOGMAN_MSG_A_FMT("Unhandled {} size: {}", __func__, Op->Size); break;
+  }
+  add(ARMEmitter::Size::i64Bit, Addr, Addr, Size);
+#else
   const auto Op = IROp->C<IR::IROp_Pop>();
   const auto Size = IR::OpSizeToSize(Op->Size);
   const auto Addr = GetReg(Op->InoutAddr);
@@ -1603,9 +1661,33 @@ DEF_OP(Pop) {
     break;
   }
   }
+#endif
 }
 
 DEF_OP(PopTwo) {
+#ifdef FEX_GUEST_BASE
+  const auto Op = IROp->C<IR::IROp_PopTwo>();
+  const auto Size = IR::OpSizeToSize(Op->Size);
+  const auto Addr = GetReg(Op->InoutAddr);
+  auto Dst1 = GetReg(Op->OutValue1);
+  const auto Dst2 = GetReg(Op->OutValue2);
+
+  // ldp x, x is invalid. Explicitly discard the first destination to encode.
+  if (Dst1 == Dst2) {
+    Dst1 = ARMEmitter::Reg::zr;
+  }
+
+  LOGMAN_THROW_A_FMT(Dst1 != Addr && Dst2 != Addr, "Invalid");
+  LOGMAN_THROW_A_FMT(Dst1 != Dst2, "Invalid");
+
+  add(ARMEmitter::Size::i64Bit, TMP1, GUESTBASE, Addr, ARMEmitter::ShiftType::LSL, 0);
+  switch (Size) {
+  case 4: ldp<ARMEmitter::IndexType::OFFSET>(Dst1.W(), Dst2.W(), TMP1, 0); break;
+  case 8: ldp<ARMEmitter::IndexType::OFFSET>(Dst1.X(), Dst2.X(), TMP1, 0); break;
+  default: LOGMAN_MSG_A_FMT("Unhandled {} size: {}", __func__, Op->Size); break;
+  }
+  add(ARMEmitter::Size::i64Bit, Addr, Addr, 2 * Size);
+#else
   const auto Op = IROp->C<IR::IROp_PopTwo>();
   const auto Size = IR::OpSizeToSize(Op->Size);
   const auto Addr = GetReg(Op->InoutAddr);
@@ -1634,13 +1716,14 @@ DEF_OP(PopTwo) {
     break;
   }
   }
+#endif
 }
 
 DEF_OP(StoreMem) {
   const auto Op = IROp->C<IR::IROp_StoreMem>();
   const auto OpSize = IROp->Size;
 
-  const auto MemReg = GetReg(Op->Addr);
+  const auto MemReg = MemPtr(Op->Addr, TMP1);
   const auto MemSrc = GenerateMemOperand(OpSize, MemReg, Op->Offset, Op->OffsetType, Op->OffsetScale);
 
   if (Op->Class == IR::RegClass::GPR) {
@@ -1694,7 +1777,7 @@ DEF_OP(StoreMemX87SVEOptPredicate) {
   LOGMAN_THROW_A_FMT(HostSupportsSVE128 || HostSupportsSVE256, "StoreMemX87SVEOptPredicate needs SVE support");
 
   const auto RegData = GetVReg(Op->Value);
-  const auto MemReg = GetReg(Op->Addr);
+  const auto MemReg = MemPtr(Op->Addr, TMP1);
   const auto MemDst = ARMEmitter::SVEMemOperand(MemReg.X(), 0);
 
   switch (IROp->ElementSize) {
@@ -1722,7 +1805,7 @@ DEF_OP(LoadMemX87SVEOptPredicate) {
   const auto Op = IROp->C<IR::IROp_LoadMemX87SVEOptPredicate>();
   const auto Dst = GetVReg(Node);
   const auto Predicate = PRED_X87_SVEOPT;
-  const auto MemReg = GetReg(Op->Addr);
+  const auto MemReg = MemPtr(Op->Addr, TMP1);
 
   LOGMAN_THROW_A_FMT(HostSupportsSVE128 || HostSupportsSVE256, "LoadMemX87SVEOptPredicate needs SVE support");
 
@@ -1752,7 +1835,7 @@ DEF_OP(LoadMemX87SVEOptPredicate) {
 DEF_OP(StoreMemPair) {
   const auto Op = IROp->C<IR::IROp_StoreMemPair>();
   const auto OpSize = IROp->Size;
-  const auto Addr = GetReg(Op->Addr);
+  const auto Addr = MemPtr(Op->Addr, TMP1);
 
   if (Op->Class == IR::RegClass::GPR) {
     const auto Src1 = GetZeroableReg(Op->Value1);
@@ -1779,7 +1862,7 @@ DEF_OP(StoreMemTSO) {
   const auto Op = IROp->C<IR::IROp_StoreMemTSO>();
   const auto OpSize = IROp->Size;
 
-  const auto MemReg = GetReg(Op->Addr);
+  const auto MemReg = MemPtr(Op->Addr, TMP1);
 
   if (Op->Class == IR::RegClass::GPR) {
     LOGMAN_THROW_A_FMT(Op->Offset.IsInvalid() || CTX->HostFeatures.SupportsTSOImm9, "unexpected offset");
@@ -1877,10 +1960,17 @@ DEF_OP(MemSet) {
 
   mov(TMP1, Length.X());
   if (Op->Prefix.IsInvalid()) {
+    (void)GuestPtr(MemReg, TMP2);
+    // TMP2 = host address of the guest pointer (no-op move without a guest base).
+#ifndef FEX_GUEST_BASE
     mov(TMP2, MemReg.X());
+#endif
   } else {
     const auto Prefix = GetReg(Op->Prefix);
     add(TMP2, Prefix.X(), MemReg.X());
+#ifdef FEX_GUEST_BASE
+    add(ARMEmitter::Size::i64Bit, TMP2, TMP2, GUESTBASE, ARMEmitter::ShiftType::LSL, 0);
+#endif
   }
 
   if (!DirectionIsInline) {
@@ -2114,8 +2204,13 @@ DEF_OP(MemCpy) {
   ARMEmitter::ForwardLabel Done {};
 
   mov(TMP1, Length.X());
+#ifdef FEX_GUEST_BASE
+  add(ARMEmitter::Size::i64Bit, TMP2, GUESTBASE, MemRegDest, ARMEmitter::ShiftType::LSL, 0);
+  add(ARMEmitter::Size::i64Bit, TMP3, GUESTBASE, MemRegSrc, ARMEmitter::ShiftType::LSL, 0);
+#else
   mov(TMP2, MemRegDest.X());
   mov(TMP3, MemRegSrc.X());
+#endif
 
   // TMP1 = Length
   // TMP2 = Dest
@@ -2396,7 +2491,7 @@ DEF_OP(CacheLineClear) {
 
   auto Op = IROp->C<IR::IROp_CacheLineClear>();
 
-  auto MemReg = GetReg(Op->Addr);
+  auto MemReg = MemPtr(Op->Addr, TMP2);
 
   // Clear dcache only
   // icache doesn't matter here since the guest application shouldn't be calling clflush on JIT code.
@@ -2426,7 +2521,7 @@ DEF_OP(CacheLineClean) {
 
   auto Op = IROp->C<IR::IROp_CacheLineClean>();
 
-  auto MemReg = GetReg(Op->Addr);
+  auto MemReg = MemPtr(Op->Addr, TMP2);
 
   // Clean dcache only
   // check host cacheline size again x86_64 size to ensure at least 64 bytes are cleaned
@@ -2445,7 +2540,7 @@ DEF_OP(CacheLineClean) {
 DEF_OP(CacheLineZero) {
   auto Op = IROp->C<IR::IROp_CacheLineZero>();
 
-  auto MemReg = GetReg(Op->Addr);
+  auto MemReg = MemPtr(Op->Addr, TMP2);
 
   if (CTX->HostFeatures.SupportsCLZERO) {
     // We can use this instruction directly
@@ -2465,7 +2560,7 @@ DEF_OP(CacheLineZero) {
 
 DEF_OP(Prefetch) {
   auto Op = IROp->C<IR::IROp_Prefetch>();
-  const auto MemReg = GetReg(Op->Addr);
+  const auto MemReg = MemPtr(Op->Addr, TMP1);
 
   // Access size is only ever handled as 8-byte. Even though it is accesssed as a cacheline.
   const auto MemSrc = GenerateMemOperand(IR::OpSize::i64Bit, MemReg, Op->Offset, Op->OffsetType, Op->OffsetScale);
@@ -2510,7 +2605,7 @@ DEF_OP(VStoreNonTemporal) {
   const auto Is128Bit = OpSize == IR::OpSize::i128Bit;
 
   const auto Value = GetVReg(Op->Value);
-  const auto MemReg = GetReg(Op->Addr);
+  const auto MemReg = MemPtr(Op->Addr, TMP1);
   const auto Offset = Op->Offset;
 
   if (Is256Bit) {
@@ -2537,7 +2632,7 @@ DEF_OP(VStoreNonTemporalPair) {
   const auto ValueLow = GetVReg(Op->ValueLow);
   const auto ValueHigh = GetVReg(Op->ValueHigh);
 
-  const auto MemReg = GetReg(Op->Addr);
+  const auto MemReg = MemPtr(Op->Addr, TMP1);
   const auto Offset = Op->Offset;
 
   stnp(ValueLow.Q(), ValueHigh.Q(), MemReg, Offset);
@@ -2552,7 +2647,7 @@ DEF_OP(VLoadNonTemporal) {
   const auto Is128Bit = OpSize == IR::OpSize::i128Bit;
 
   const auto Dst = GetVReg(Node);
-  const auto MemReg = GetReg(Op->Addr);
+  const auto MemReg = MemPtr(Op->Addr, TMP1);
   const auto Offset = Op->Offset;
 
   if (Is256Bit) {

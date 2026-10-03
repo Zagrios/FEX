@@ -10,7 +10,9 @@ set(FEXCORE_BASE_SRCS
   Utils/SpinWaitLock.cpp
   Utils/WildcardMatcher.cpp)
 
-if (NOT MINGW)
+if (NOT MINGW AND NOT APPLE)
+  # Darwin port: the 64-bit VA allocator is Linux-only (MAP_FIXED_NOREPLACE, MADV_DONTNEED zero-fill semantics,
+  # /proc/self/maps). The guest window is reserved by the host instead.
   list(APPEND FEXCORE_BASE_SRCS
     Utils/Allocator/64BitAllocator.cpp)
 endif()
@@ -294,6 +296,7 @@ endfunction()
 
 AddObject(${PROJECT_NAME}_object)
 AddLibrary(${PROJECT_NAME} STATIC)
+if (NOT APPLE)
 AddLibrary(${PROJECT_NAME}_shared SHARED)
 
 if (NOT MINGW AND NOT BUILD_STEAM_SUPPORT)
@@ -301,10 +304,13 @@ if (NOT MINGW AND NOT BUILD_STEAM_SUPPORT)
     DESTINATION ${CMAKE_INSTALL_LIBDIR}
     COMPONENT Libraries)
 endif()
+endif()
 
 # Meta-library to link jemalloc libraries enabled in the build configuration.
 # Only needed for targets that run emulation. For others, use JemallocDummy.
 add_library(JemallocLibs STATIC Utils/AllocatorHooks.cpp)
+# Darwin port: the include directory was only set when ENABLE_FEX_ALLOCATOR is on, which broke the build without it.
+target_include_directories(JemallocLibs PRIVATE "${PROJECT_SOURCE_DIR}/include/")
 if (ENABLE_FEX_ALLOCATOR)
   target_compile_definitions(JemallocLibs PRIVATE ENABLE_FEX_ALLOCATOR=1)
   target_link_libraries(JemallocLibs PUBLIC rpmalloc)
@@ -323,4 +329,6 @@ if (NOT MINGW)
 endif()
 
 # The shared library should always link enabled jemalloc libraries
+if (NOT APPLE)
 target_link_libraries(${PROJECT_NAME}_shared PRIVATE JemallocLibs)
+endif()

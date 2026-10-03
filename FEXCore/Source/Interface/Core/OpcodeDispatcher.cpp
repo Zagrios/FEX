@@ -20,6 +20,7 @@ $end_info$
 #include <FEXCore/Core/X86Enums.h>
 #include <FEXCore/HLE/SyscallHandler.h>
 #include <FEXCore/IR/IR.h>
+#include <FEXCore/Utils/GuestBase.h>
 #include <FEXCore/Utils/EnumUtils.h>
 #include <FEXCore/Utils/LogManager.h>
 
@@ -4212,6 +4213,11 @@ void OpDispatchBuilder::UpdatePrefixFromSegment(Ref Segment, uint32_t SegmentReg
   // Fun quirk, if we mask the selector then it is premultiplied by 8 which we need to do for accessing anyway.
   auto SegmentOffset = _And(OpSize::i32Bit, Segment, _Constant(0xfff8));
   Ref SegmentBase = _LoadContextGPRIndexed(GDT, OpSize::i64Bit, offsetof(FEXCore::Core::CPUState, segment_arrays[0]), 8);
+#ifdef FEX_GUEST_BASE
+  // Darwin port: the descriptor table is host memory but LoadMem adds the guest base to its address; remove it first so
+  // the access lands on the host table (a segment register load otherwise faults at a random host address).
+  SegmentBase = _Sub(OpSize::i64Bit, SegmentBase, _Constant(FEXCore::GuestBase));
+#endif
   Ref NewSegment = _LoadMemGPR(OpSize::i64Bit, SegmentBase, SegmentOffset, OpSize::i8Bit, MemOffsetType::UXTW, 1);
   CheckLegacySegmentWrite(NewSegment, SegmentReg);
 
@@ -5073,11 +5079,13 @@ void OpDispatchBuilder::RDTSCPOp(OpcodeArgs) {
   //  - Explicitly use an MFENCE before this instruction if you want this behaviour
   // This instruction is not an execution fence, so subsequent instructions can execute after this
   //  - Explicitly use an LFENCE after RDTSCP if you want to block this behaviour
+#ifndef __APPLE__ // Darwin port: ProcessorID asks the kernel (JIT/MiscOps.cpp)
   if (CTX->HostFeatures.HostType != FEXCore::HostFeatures::HostTypeEnum::Linux && !CTX->HostFeatures.SupportsCPUIndexInTPIDRRO) {
     // RDTSCP is unsupported on Win32 platforms if TPIDRRO isn't supported.
     UnimplementedOp(Op);
     return;
   }
+#endif
   auto Counter = CycleCounter(true);
 
   auto ID = _ProcessorID();
@@ -5087,11 +5095,13 @@ void OpDispatchBuilder::RDTSCPOp(OpcodeArgs) {
 }
 
 void OpDispatchBuilder::RDPIDOp(OpcodeArgs) {
+#ifndef __APPLE__ // Darwin port: ProcessorID asks the kernel (JIT/MiscOps.cpp)
   if (CTX->HostFeatures.HostType != FEXCore::HostFeatures::HostTypeEnum::Linux && !CTX->HostFeatures.SupportsCPUIndexInTPIDRRO) {
     // RDTSCP is unsupported on Win32 platforms if TPIDRRO isn't supported.
     UnimplementedOp(Op);
     return;
   }
+#endif
   StoreResultGPR(Op, _ProcessorID());
 }
 

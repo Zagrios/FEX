@@ -43,6 +43,7 @@ $end_info$
 #include <atomic>
 #else
 #include <FEXHeaderUtils/Syscalls.h>
+#include <FEXCore/Utils/JITWriteScope.h>
 #endif
 
 namespace {
@@ -546,7 +547,10 @@ static void DirectBlockDelinker(FEXCore::Context::ExitFunctionLinkData* Record, 
     BranchEmit.b(BranchOffset);
   }
 
-  std::atomic_ref<uint32_t>(*reinterpret_cast<uint32_t*>(CallerAddress)).store(BranchInst, std::memory_order::relaxed);
+  {
+    FEXCore::Utils::JITWriteScope WriteScope; // Darwin port: patching a MAP_JIT region
+    std::atomic_ref<uint32_t>(*reinterpret_cast<uint32_t*>(CallerAddress)).store(BranchInst, std::memory_order::relaxed);
+  }
   ARMEmitter::Emitter::ClearICache(reinterpret_cast<void*>(CallerAddress), 4);
 }
 
@@ -557,7 +561,10 @@ static void IndirectBlockDelinker(FEXCore::Context::ExitFunctionLinkData* Record
   // Restore branch +2 instructions to jump to the linker block
   BranchEmit.b(0x2);
 
-  std::atomic_ref<uint32_t>(*reinterpret_cast<uint32_t*>(JumpThunkStartAddress)).store(BranchInst, std::memory_order::relaxed);
+  {
+    FEXCore::Utils::JITWriteScope WriteScope; // Darwin port: patching a MAP_JIT region
+    std::atomic_ref<uint32_t>(*reinterpret_cast<uint32_t*>(JumpThunkStartAddress)).store(BranchInst, std::memory_order::relaxed);
+  }
   ARMEmitter::Emitter::ClearICache(reinterpret_cast<void*>(JumpThunkStartAddress), 4);
 
   // No need to reset HostCode here as the exit linker pointer is stored separately, and if the block is relinked it will be updated.
@@ -624,10 +631,16 @@ uint64_t Arm64JITCore::ExitFunctionLink(FEXCore::Core::CpuStateFrame* Frame, FEX
         GuestRip, Record, [](FEXCore::Context::ExitFunctionLinkData* Record) { DirectBlockDelinker(Record, false); }, lk);
     }
 
-    std::atomic_ref<uint32_t>(*reinterpret_cast<uint32_t*>(CallerAddress)).store(BranchInst, std::memory_order::relaxed);
+    {
+      FEXCore::Utils::JITWriteScope WriteScope; // Darwin port: patching a MAP_JIT region
+      std::atomic_ref<uint32_t>(*reinterpret_cast<uint32_t*>(CallerAddress)).store(BranchInst, std::memory_order::relaxed);
+    }
     ARMEmitter::Emitter::ClearICache(reinterpret_cast<void*>(CallerAddress), 4);
   } else {
     // This case is common between calls and jumps as the thunk callsite can be left untouched.
+    // Darwin port: Record lives inside the code buffer, so both stores below need the MAP_JIT write scope. The scope is
+    // closed before ClearICache and before returning into JIT code.
+    FEXCore::Utils::JITWriteScope WriteScope;
     std::atomic_ref<uint64_t>(Record->HostCode).store(HostCode, std::memory_order::seq_cst);
 #ifdef ARCHITECTURE_arm64
     // Make memory write visible to other threads reading the same location
@@ -716,6 +729,13 @@ void Arm64JITCore::ClearCache() {
 }
 
 Arm64JITCore::~Arm64JITCore() {}
+
+bool Arm64JITCore::IsHostAddress(const IR::OrderedNodeWrapper& WNode) const {
+  if (WNode.IsImmediate() || WNode.IsInvalid()) {
+    return false;
+  }
+  return IR->GetOp<IR::IROp_Header>(WNode)->Op == IR::IROps::OP_FORMCONTEXTADDRESS;
+}
 
 bool Arm64JITCore::IsInlineConstant(const IR::OrderedNodeWrapper& WNode, uint64_t* Value) const {
   if (WNode.IsImmediate()) {
@@ -914,13 +934,14 @@ CPUBackend::CompiledCode Arm64JITCore::CompileCode(uint64_t Entry, uint64_t Size
 
   // Fairly excessive buffer range to make sure we don't overflow
   // One page baseline, plus SSANodeMultipler bytes, plus another page for guard page.
-  const uint32_t DesiredBufferRange = AlignUp(FEXCore::Utils::FEX_PAGE_SIZE * 2 + SSACount * SSANodeMultiplier, FEXCore::Utils::FEX_PAGE_SIZE);
+  const uint32_t DesiredBufferRange =
+    AlignUp(FEXCore::Utils::FEX_HOST_PAGE_SIZE * 2 + SSACount * SSANodeMultiplier, FEXCore::Utils::FEX_HOST_PAGE_SIZE);
 
   // JIT output is first written to a temporary buffer and later relocated to the CodeBuffer.
   // This minimizes lock contention of CodeBufferWriteMutex.
   auto TempCodeBufferInfo = TempCodeBufferAllocator.ReownOrClaimBufferWithSize(DesiredBufferRange);
   auto TempCodeBuffer = TempCodeBufferInfo.Ptr;
-  const uint32_t UsableBufferRange = TempCodeBufferInfo.Size - FEXCore::Utils::FEX_PAGE_SIZE;
+  const uint32_t UsableBufferRange = TempCodeBufferInfo.Size - FEXCore::Utils::FEX_HOST_PAGE_SIZE;
 
   SetBuffer(TempCodeBuffer, UsableBufferRange);
 
@@ -1160,7 +1181,10 @@ CPUBackend::CompiledCode Arm64JITCore::CompileCode(uint64_t Entry, uint64_t Size
     CodeData.HostCodeOffset = CodeData.BlockBegin - CurrentCodeBuffer->GetBufferBase();
 
     // Copy over CodeBuffer contents
-    memcpy(AllocatedInfo.BufferAllocationOffset, TempCodeBuffer, CodeData.Size);
+    {
+      FEXCore::Utils::JITWriteScope WriteScope; // Darwin port: the shared code buffer is a MAP_JIT region
+      memcpy(AllocatedInfo.BufferAllocationOffset, TempCodeBuffer, CodeData.Size);
+    }
   }
 
   TempCodeBufferAllocator.DelayedDisownBuffer();
@@ -1205,7 +1229,10 @@ CPUBackend::CompiledCode Arm64JITCore::LoadCachedCode(std::span<const uint8_t> H
   auto AllocatedInfo = AllocateCodeBufferInSharedCache(HostBytes.size());
 
   uint8_t* Dest = AllocatedInfo.BufferAllocationOffset;
-  memcpy(Dest, HostBytes.data(), HostBytes.size());
+  {
+    FEXCore::Utils::JITWriteScope WriteScope; // Darwin port: the shared code buffer is a MAP_JIT region
+    memcpy(Dest, HostBytes.data(), HostBytes.size());
+  }
   ClearICache(Dest, HostBytes.size());
 
   CPUBackend::CompiledCode Result;

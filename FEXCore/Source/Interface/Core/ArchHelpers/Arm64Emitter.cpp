@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 #include "Interface/Core/ArchHelpers/Arm64Emitter.h"
+#include <FEXCore/Utils/GuestBase.h>
 #include "Interface/Core/Dispatcher/Dispatcher.h"
 #include "Interface/Context/Context.h"
 
@@ -73,6 +74,25 @@ namespace x64 {
     ARMEmitter::Reg::r8, ARMEmitter::Reg::r16, ARMEmitter::Reg::r17,
   };
 
+#ifdef __APPLE__
+  // Darwin port: x18 is the platform register. Measured on macOS 27 (see evidence/fexcore-darwin/probes, x18.c): the
+  // kernel zeroes x18 across preemption and signal delivery, so JIT state cannot live there. Drop it from the pool.
+  // x24 is reserved for GUESTBASE (guest base offset).
+  constexpr std::array<ARMEmitter::Register, 5> RA = {
+    // All these callee saved
+    ARMEmitter::Reg::r20, ARMEmitter::Reg::r21, ARMEmitter::Reg::r22, ARMEmitter::Reg::r23,
+    ARMEmitter::Reg::r30,
+  };
+
+  constexpr unsigned RAPairs = 4;
+
+  // Dynamic GPRs
+  constexpr std::array<ARMEmitter::Register, 1> PreserveAll_Dynamic = {
+    ARMEmitter::Reg::r30,
+  };
+
+  constexpr std::array<ARMEmitter::Register, 1> NotPreserved_Dynamic = PreserveAll_Dynamic;
+#else
   constexpr std::array<ARMEmitter::Register, 7> RA = {
     // All these callee saved
     ARMEmitter::Reg::r20, ARMEmitter::Reg::r21, ARMEmitter::Reg::r22, ARMEmitter::Reg::r23,
@@ -88,6 +108,7 @@ namespace x64 {
   };
 
   constexpr std::array<ARMEmitter::Register, 2> NotPreserved_Dynamic = PreserveAll_Dynamic;
+#endif
 
   // All are caller saved
   constexpr std::array<ARMEmitter::VRegister, 16> SRAFPR = {
@@ -812,6 +833,9 @@ void Arm64Emitter::FillStaticRegs(FillStaticRegOptions Options) {
 #endif
 
   ldr(REG_CALLRET_SP, STATE.R(), offsetof(FEXCore::Core::CpuStateFrame, State.callret_sp));
+#ifdef __APPLE__
+  LoadConstant(ARMEmitter::Size::i64Bit, GUESTBASE, FEXCore::GuestBase);
+#endif
 
   if (Options.NZCV) {
     // Regardless of what GPRs/FPRs we're filling, we need to fill NZCV since it

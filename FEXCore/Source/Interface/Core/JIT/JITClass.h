@@ -6,6 +6,7 @@ $end_info$
 */
 
 #pragma once
+#include <FEXCore/Utils/GuestBase.h>
 
 #include "Interface/Core/ArchHelpers/Arm64Emitter.h"
 #include "Interface/Core/CPUBackend.h"
@@ -127,6 +128,19 @@ private:
     }
 
     FEX_UNREACHABLE;
+  }
+
+
+  // Darwin port: guest base offset. Translates a guest address register into a host address register
+  // (GUESTBASE + guest address). Tmp must be a register the caller is not using.
+  [[nodiscard]]
+  ARMEmitter::Register GuestPtr(ARMEmitter::Register Guest, [[maybe_unused]] ARMEmitter::Register Tmp) {
+#ifdef FEX_GUEST_BASE
+    add(ARMEmitter::Size::i64Bit, Tmp, GUESTBASE, Guest, ARMEmitter::ShiftType::LSL, 0);
+    return Tmp;
+#else
+    return Guest;
+#endif
   }
 
   [[nodiscard]]
@@ -339,6 +353,16 @@ private:
 
   [[nodiscard]]
   bool IsInlineConstant(const IR::OrderedNodeWrapper& Node, uint64_t* Value = nullptr) const;
+  // Darwin port: true when the address operand is a host address of the CPU state (FormContextAddress), which the
+  // guest base offset must not be applied to (the x87 stack pass emits LoadMem/StoreMem on such addresses).
+  [[nodiscard]]
+  bool IsHostAddress(const IR::OrderedNodeWrapper& Node) const;
+  // Host address register for a memory op address operand: GuestPtr unless the address is a host context address.
+  [[nodiscard]]
+  ARMEmitter::Register MemPtr(const IR::OrderedNodeWrapper& Addr, ARMEmitter::Register Tmp) {
+    const auto Reg = GetReg(Addr);
+    return IsHostAddress(Addr) ? Reg : GuestPtr(Reg, Tmp);
+  }
   [[nodiscard]]
   bool IsInlineEntrypointOffset(const IR::OrderedNodeWrapper& WNode, uint64_t* Value) const;
 

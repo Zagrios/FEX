@@ -86,6 +86,10 @@ public:
   ///< State reconstruction helpers
   ///< Reconstructs the guest RIP from the passed in thread context and related Host PC.
   FEX_DEFAULT_VISIBILITY virtual uint64_t RestoreRIPFromHostPC(FEXCore::Core::InternalThreadState* Thread, uint64_t HostPC) = 0;
+  // Darwin port: true when HostPC is exactly the first host instruction of the translation of a guest instruction (after the
+  // register-cache flush), i.e. the guest state held in the host registers and the context is that of an x86 instruction
+  // boundary and *RIP is the address of that instruction. Only then may an asynchronous signal interrupt translated code.
+  FEX_DEFAULT_VISIBILITY virtual bool IsHostPCAtGuestInstructionBoundary(FEXCore::Core::InternalThreadState* Thread, uint64_t HostPC, uint64_t* RIP) = 0;
   /**
    * @brief Reconstructs a compacted EFLAGS from FEX's internal EFLAG representation.
    *

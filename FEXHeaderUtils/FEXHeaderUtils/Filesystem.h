@@ -9,7 +9,9 @@
 #include <fcntl.h>
 #include <memory_resource>
 #include <string_view>
-#ifndef _WIN32
+#if defined(__APPLE__)
+#include <limits.h>
+#elif !defined(_WIN32)
 #include <linux/limits.h>
 #include <sys/sendfile.h>
 #else
@@ -216,7 +218,36 @@ inline bool CopyFile(const fextl::string& From, const fextl::string& To, CopyOpt
       close(SourceFD);
       return false;
     }
+#ifdef __APPLE__
+    // Darwin's sendfile() only targets sockets. Copy with read/write instead.
+    bool Result = true;
+    {
+      char Buffer[16384];
+      off_t Remaining = buf.st_size;
+      while (Remaining > 0) {
+        const ssize_t Read = read(SourceFD, Buffer, sizeof(Buffer));
+        if (Read <= 0) {
+          Result = false;
+          break;
+        }
+        ssize_t Written = 0;
+        while (Written < Read) {
+          const ssize_t Chunk = write(DestinationFD, Buffer + Written, Read - Written);
+          if (Chunk <= 0) {
+            Result = false;
+            break;
+          }
+          Written += Chunk;
+        }
+        if (!Result) {
+          break;
+        }
+        Remaining -= Read;
+      }
+    }
+#else
     bool Result = sendfile(DestinationFD, SourceFD, nullptr, buf.st_size) == buf.st_size;
+#endif
     close(DestinationFD);
     close(SourceFD);
     return Result;

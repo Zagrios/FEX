@@ -7,6 +7,10 @@
 #include <FEXCore/Utils/MathUtils.h>
 #include <FEXCore/Utils/PrctlUtils.h>
 #include <FEXCore/Utils/TypeDefines.h>
+#ifdef __APPLE__
+#include <mach/mach.h>
+#include <mach/mach_vm.h>
+#endif
 #include <FEXCore/fextl/fmt.h>
 #include <FEXCore/fextl/memory.h>
 #include <FEXCore/fextl/memory_resource.h>
@@ -23,7 +27,9 @@
 #include <fcntl.h>
 #ifndef _WIN32
 #include <sys/mman.h>
+#ifndef __APPLE__
 #include <sys/user.h>
+#endif
 #endif
 
 namespace fextl::pmr {
@@ -34,7 +40,91 @@ std::pmr::memory_resource* get_default_resource() {
 } // namespace fextl::pmr
 
 namespace FEXCore::Allocator {
-#ifndef _WIN32
+#if defined(__APPLE__)
+// Darwin port. The Linux implementation below steals the unused address space with /proc/self/maps and runs a
+// private 64-bit VMA allocator on top of it. Neither is portable: there is no /proc, no MAP_FIXED_NOREPLACE and
+// MADV_DONTNEED does not zero pages. On Darwin FEX's own allocations use the system allocator and mmap, and the host
+// reserves the guest window itself. The functions below keep the public API of FEXCore/Utils/Allocator.h usable.
+MMAP_Hook mmap {::mmap};
+MUNMAP_Hook munmap {::munmap};
+
+void VirtualName(const char* Name, void* Ptr, size_t Size) {}
+
+void SetupHooks(size_t PageSize) {
+  InitializeAllocator(PageSize);
+}
+
+void ClearHooks() {}
+
+FEX_DEFAULT_VISIBILITY size_t GetHostVABits() {
+  // Measured: the highest mappable page of a macOS arm64 process ends at 0x7ffffe000000 (a little under 2^47).
+  return 47;
+}
+
+// Returns the free gaps of [Begin, End) in address order. MapsFD is ignored on Darwin (kept for API parity).
+fextl::vector<MemoryRegion> CollectMemoryGaps(uintptr_t Begin, uintptr_t End, int MapsFD) {
+  fextl::vector<MemoryRegion> Regions;
+  mach_vm_address_t Cursor = Begin;
+  while (Cursor < End) {
+    mach_vm_address_t Addr = Cursor;
+    mach_vm_size_t Size = 0;
+    vm_region_basic_info_data_64_t Info;
+    mach_msg_type_number_t Count = VM_REGION_BASIC_INFO_COUNT_64;
+    mach_port_t ObjectName = MACH_PORT_NULL;
+    const kern_return_t kr = mach_vm_region(mach_task_self(), &Addr, &Size, VM_REGION_BASIC_INFO_64,
+                                            reinterpret_cast<vm_region_info_t>(&Info), &Count, &ObjectName);
+    if (kr != KERN_SUCCESS) {
+      // No region at or after Cursor: everything left is free.
+      Regions.push_back({reinterpret_cast<void*>(Cursor), End - Cursor});
+      break;
+    }
+    if (Addr > Cursor) {
+      const uintptr_t GapEnd = std::min<uintptr_t>(Addr, End);
+      Regions.push_back({reinterpret_cast<void*>(Cursor), GapEnd - Cursor});
+    }
+    Cursor = Addr + Size;
+  }
+  return Regions;
+}
+
+// Reserves (PROT_NONE) every free gap of [Begin, End). Gaps are mapped with a hint and no MAP_FIXED, so a mapping that
+// appears concurrently is never overwritten. Gaps the kernel refuses (reserved ranges answer EACCES) are skipped.
+fextl::vector<MemoryRegion> StealMemoryRegion(uintptr_t Begin, uintptr_t End) {
+  auto Gaps = CollectMemoryGaps(Begin, End, -1);
+  fextl::vector<MemoryRegion> Reserved;
+  for (auto& Gap : Gaps) {
+    const uintptr_t GapBegin = FEXCore::AlignUp(reinterpret_cast<uintptr_t>(Gap.Ptr), FEXCore::Utils::FEX_HOST_PAGE_SIZE);
+    const uintptr_t GapEnd = FEXCore::AlignDown(reinterpret_cast<uintptr_t>(Gap.Ptr) + Gap.Size, FEXCore::Utils::FEX_HOST_PAGE_SIZE);
+    if (GapEnd <= GapBegin) {
+      continue;
+    }
+    void* Result = ::mmap(reinterpret_cast<void*>(GapBegin), GapEnd - GapBegin, PROT_NONE, MAP_ANONYMOUS | MAP_NORESERVE | MAP_PRIVATE, -1, 0);
+    if (Result == MAP_FAILED) {
+      continue;
+    }
+    if (Result != reinterpret_cast<void*>(GapBegin)) {
+      ::munmap(Result, GapEnd - GapBegin);
+      continue;
+    }
+    Reserved.push_back({Result, GapEnd - GapBegin});
+  }
+  return Reserved;
+}
+
+fextl::vector<MemoryRegion> Setup48BitAllocatorIfExists(size_t PageSize) {
+  // Nothing to hide on Darwin: user space ends below 2^47, the guest never sees a canonical-hole address.
+  return {};
+}
+
+void ReclaimMemoryRegion(const fextl::vector<MemoryRegion>& Regions) {
+  for (const auto& Region : Regions) {
+    ::munmap(Region.Ptr, Region.Size);
+  }
+}
+
+void LockBeforeFork(FEXCore::Core::InternalThreadState* Thread) {}
+void UnlockAfterFork(FEXCore::Core::InternalThreadState* Thread, bool Child) {}
+#elif !defined(_WIN32)
 MMAP_Hook mmap {::mmap};
 MUNMAP_Hook munmap {::munmap};
 

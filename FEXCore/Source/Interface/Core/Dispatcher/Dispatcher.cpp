@@ -16,6 +16,7 @@
 #include <FEXCore/Utils/Event.h>
 #include <FEXCore/Utils/LogManager.h>
 #include <FEXCore/Utils/MathUtils.h>
+#include <FEXCore/Utils/JITWriteScope.h>
 #include <FEXHeaderUtils/Syscalls.h>
 
 #include <CodeEmitter/Emitter.h>
@@ -34,12 +35,17 @@ static void SleepThread(FEXCore::Context::ContextImpl* CTX, FEXCore::Core::CpuSt
   CTX->SyscallHandler->SleepThread(CTX, Frame);
 }
 
-constexpr size_t MAX_DISPATCHER_CODE_SIZE = FEXCore::Utils::FEX_PAGE_SIZE * 4;
+constexpr size_t MAX_DISPATCHER_CODE_SIZE = FEXCore::Utils::FEX_HOST_PAGE_SIZE * 4;
 
 Dispatcher::Dispatcher(FEXCore::Context::ContextImpl* ctx)
   : Arm64Emitter(ctx, FEXCore::Allocator::VirtualAlloc(MAX_DISPATCHER_CODE_SIZE, true), MAX_DISPATCHER_CODE_SIZE)
   , CTX {ctx} {
-  EmitDispatcher();
+  {
+    // Darwin port: the dispatcher is emitted straight into a MAP_JIT buffer, which is writable only inside this scope.
+    // Nothing may be executed from that buffer until the scope closes (EmitDispatcher ends with ClearICache).
+    FEXCore::Utils::JITWriteScope WriteScope;
+    EmitDispatcher();
+  }
 
   FEXCore::Allocator::VirtualName("FEXMem_Misc", reinterpret_cast<void*>(GetBufferBase()), MAX_DISPATCHER_CODE_SIZE);
 }

@@ -332,7 +332,11 @@ DEF_OP(ValidateCode) {
   auto WorkingReg = ARMEmitter::XReg::zr;
   auto BaseReg = TMP2;
   auto TmpDataReg = TMP3;
+#ifdef FEX_GUEST_BASE
+  add(ARMEmitter::Size::i64Bit, BaseReg, GUESTBASE, Base, ARMEmitter::ShiftType::LSL, 0);
+#else
   mov(ARMEmitter::Size::i64Bit, BaseReg, Base);
+#endif
 
   while (len >= 8) {
     ldr<ARMEmitter::IndexType::POST>(TmpDataReg, BaseReg, 8);

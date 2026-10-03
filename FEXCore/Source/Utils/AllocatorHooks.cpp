@@ -13,7 +13,11 @@
 #endif
 
 #include <cstdint>
+#ifdef __APPLE__
+#include <malloc/malloc.h>
+#else
 #include <malloc.h>
+#endif
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -211,7 +215,16 @@ void* calloc(size_t n, size_t size) {
   return ::calloc(n, size);
 }
 void* memalign(size_t align, size_t s) {
+#ifdef __APPLE__
+  // Darwin has no memalign(). posix_memalign needs a power of two that is a multiple of sizeof(void*).
+  void* Ptr = nullptr;
+  if (align < sizeof(void*)) {
+    align = sizeof(void*);
+  }
+  return ::posix_memalign(&Ptr, align, s) == 0 ? Ptr : nullptr;
+#else
   return ::memalign(align, s);
+#endif
 }
 void* valloc(size_t size) {
   return ::valloc(size);
@@ -226,10 +239,20 @@ void free(void* ptr) {
   return ::free(ptr);
 }
 size_t malloc_usable_size(void* ptr) {
+#ifdef __APPLE__
+  return ::malloc_size(ptr);
+#else
   return ::malloc_usable_size(ptr);
+#endif
 }
 void* aligned_alloc(size_t a, size_t s) {
+#ifdef __APPLE__
+  // C11 aligned_alloc exists on Darwin but requires size to be a multiple of the alignment. FEX does not guarantee
+  // that, so use posix_memalign which has no such rule.
+  return memalign(a, s);
+#else
   return ::aligned_alloc(a, s);
+#endif
 }
 void aligned_free(void* ptr) {
   return ::free(ptr);

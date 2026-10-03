@@ -61,10 +61,18 @@ if (NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
   message(FATAL_ERROR "Unsupported pointer size ${CMAKE_SIZEOF_VOID_P}."
     " FEX only supports 64-bit (8-byte pointer) systems."
     " If you believe this is in error, file an issue.")
-elseif (NOT (WIN32 OR CMAKE_SYSTEM_NAME STREQUAL "Linux"))
+elseif (NOT (WIN32 OR CMAKE_SYSTEM_NAME STREQUAL "Linux" OR CMAKE_SYSTEM_NAME STREQUAL "Darwin"))
   message(FATAL_ERROR "Unsupported system type ${CMAKE_SYSTEM_NAME}."
     " FEX only supports Linux and Windows."
     " If you believe this is in error, file an issue.")
+endif()
+
+# Darwin port (FEXCore only): the tools under Source/, the thunks and the Linux data files are not built.
+if (CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+  set(FEX_DARWIN_CORE_ONLY TRUE)
+  add_compile_definitions(FEX_DARWIN=1)
+else()
+  set(FEX_DARWIN_CORE_ONLY FALSE)
 endif()
 
 ## Compiler Checks ##
@@ -325,6 +333,10 @@ if (ENABLE_COVERAGE)
   link_libraries(-fprofile-instr-generate -fcoverage-mapping)
 endif()
 
+if (FEX_DARWIN_CORE_ONLY)
+  set(ENABLE_JEMALLOC_GLIBC_ALLOC FALSE)
+endif()
+
 if (ENABLE_JEMALLOC_GLIBC_ALLOC)
   # The glibc jemalloc subproject which hooks the glibc allocator.
   # Required for thunks to work.
@@ -501,7 +513,10 @@ elseif(ARCHITECTURE_arm64)
   list(APPEND FEX_TUNE_COMPILE_FLAGS "-march=armv8-a+crc")
 endif()
 
-if (TUNE_CPU STREQUAL "native")
+if (TUNE_CPU STREQUAL "native" AND CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+  # Darwin port: the Linux helper scripts read /proc/cpuinfo. The JIT does not need a host-specific -mcpu.
+  message(STATUS "Darwin: TUNE_CPU=native ignored")
+elseif (TUNE_CPU STREQUAL "native")
   if(ARCHITECTURE_arm64)
     if (CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 999999.0)
       # Clang 12.0 fixed the -mcpu=native bug with mixed big.little implementers
@@ -617,6 +632,9 @@ add_subdirectory(FEXHeaderUtils/)
 add_subdirectory(CodeEmitter/)
 add_subdirectory(FEXCore/)
 
+if (FEX_DARWIN_CORE_ONLY)
+  message(STATUS "Darwin: building FEXCore only (Source/, Data/binfmts, Data/AppConfig are skipped)")
+else()
 if (ARCHITECTURE_arm64 AND NOT MINGW AND NOT BUILD_STEAM_SUPPORT)
   # Binfmt_misc files must be installed prior to Source/ installs
   add_subdirectory(Data/binfmts/)
@@ -626,6 +644,7 @@ add_subdirectory(Source/)
 
 if (NOT BUILD_STEAM_SUPPORT)
   add_subdirectory(Data/AppConfig/)
+endif()
 endif()
 
 # Install the ThunksDB file

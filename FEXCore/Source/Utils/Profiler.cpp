@@ -2,9 +2,13 @@
 #include <cstdint>
 #include <fcntl.h>
 #ifndef _WIN32
+#ifndef __APPLE__
 #include <linux/magic.h>
+#endif
 #include <sys/stat.h>
+#ifndef __APPLE__
 #include <sys/vfs.h>
+#endif
 #endif
 
 #include <FEXCore/Utils/LogManager.h>

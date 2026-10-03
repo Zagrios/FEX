@@ -158,7 +158,15 @@ public:
   explicit ScopedSignalMasker(uint64_t Mask)
     : OriginalMask(0) {
     // Mask all signals, storing the original incoming mask
+#ifdef __APPLE__
+    // Darwin port: sigset_t is a 32-bit mask with the Linux convention (bit n-1 is signal n).
+    sigset_t NewSet = static_cast<sigset_t>(Mask);
+    sigset_t OldSet = 0;
+    ::pthread_sigmask(SIG_SETMASK, &NewSet, &OldSet);
+    *OriginalMask = OldSet;
+#else
     ::syscall(SYS_rt_sigprocmask, SIG_SETMASK, &Mask, &*OriginalMask, sizeof(*OriginalMask));
+#endif
   }
 
   // Move-only type
@@ -171,7 +179,12 @@ public:
 
   ~ScopedSignalMasker() {
     if (OriginalMask) {
+#ifdef __APPLE__
+      sigset_t OldSet = static_cast<sigset_t>(*OriginalMask);
+      ::pthread_sigmask(SIG_SETMASK, &OldSet, nullptr);
+#else
       ::syscall(SYS_rt_sigprocmask, SIG_SETMASK, &OriginalMask, nullptr, sizeof(*OriginalMask));
+#endif
     }
   }
 private:

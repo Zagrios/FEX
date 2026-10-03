@@ -1,4 +1,7 @@
 // SPDX-License-Identifier: MIT
+#if defined(__APPLE__)
+#include <pthread.h>
+#endif
 /*
 $info$
 tags: backend|arm64
@@ -6,7 +9,9 @@ $end_info$
 */
 
 #ifndef _WIN32
+#ifndef __APPLE__
 #include <syscall.h>
+#endif
 #endif
 
 #include "Interface/Context/Context.h"
@@ -229,12 +234,34 @@ DEF_OP(PrintMsg) {
   PopDynamicRegs();
 }
 
+#if defined(__APPLE__)
+static uint64_t DarwinCurrentCPU() {
+  size_t CPU = 0;
+  if (pthread_cpu_number_np(&CPU) != 0) {
+    CPU = 0;
+  }
+  return CPU & 0xfff;
+}
+#endif
+
 DEF_OP(ProcessorID) {
   if (CTX->HostFeatures.SupportsCPUIndexInTPIDRRO) {
     mrs(GetReg(Node), ARMEmitter::SystemRegister::TPIDRRO_EL0);
     return;
   }
-#ifdef _WIN32
+#if defined(__APPLE__)
+  // Darwin port: TPIDRRO_EL0 holds the thread pointer (MESURE: constant low bits on macOS 27), and there is no getcpu
+  // system call, so ask the kernel through pthread_cpu_number_np in a host call. The result is the Linux TSC_AUX /
+  // getcpu encoding with node 0: (node << 12) | cpu.
+  PushDynamicRegs(TMP4);
+  SpillStaticRegs(TMP4);
+  LoadConstant(ARMEmitter::Size::i64Bit, ARMEmitter::Reg::r3, reinterpret_cast<uint64_t>(&DarwinCurrentCPU));
+  blr(ARMEmitter::Reg::r3);
+  mov(ARMEmitter::Size::i64Bit, TMP1, ARMEmitter::Reg::r0);
+  FillStaticRegs();
+  PopDynamicRegs();
+  mov(ARMEmitter::Size::i64Bit, GetReg(Node), TMP1);
+#elif defined(_WIN32)
   else {
     // If on Windows and TPIDRRO isn't supported (like in wine), then this is a programming error.
     ERROR_AND_DIE_FMT("Unsupported");

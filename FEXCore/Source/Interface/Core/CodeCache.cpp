@@ -953,7 +953,11 @@ void CodeCache::FinalizeCodePages(MappedCodeCacheFile& Code, std::span<std::byte
 
   FEXCORE_PROFILE_SCOPED("FinalizeCodePages");
 
-#ifndef _WIN32
+#if defined(__APPLE__)
+  // Darwin port: the persistent code cache (EnableCodeCachingWIP, default off) needs mremap() with MREMAP_DONTUNMAP to
+  // publish relocated code atomically, which Darwin lacks, and its buffers would also need MAP_JIT handling.
+  ERROR_AND_DIE_FMT("{}: code caching is not supported on Darwin", __FUNCTION__);
+#elif !defined(_WIN32)
   // Atomicity is critical when making the finalized code data visible.
   // We ensure this by remapping a temporary buffer onto the PROT_NONE
   // placeholder page in CodeBuffer. Some constraints to keep in mind are:

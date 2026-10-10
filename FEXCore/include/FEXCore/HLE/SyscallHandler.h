@@ -33,6 +33,13 @@ public:
   virtual void HandleSyscall(FEXCore::Core::CpuStateFrame* Frame) = 0;
 
   virtual void MarkGuestExecutableRange(FEXCore::Core::InternalThreadState* Thread, uint64_t Start, uint64_t Length) {}
+  // With SMCChecks=mtrack: guest code in [Start, Start + Length) whose writes the frontend does not track. Translations
+  // check the bytes of each instruction there before running it, as SMCChecks=full does for all code. Asked while
+  // compiling (code invalidation mutex held shared): a frontend that starts answering true for a range must
+  // invalidate the range afterwards.
+  virtual bool NeedsCodeValidation(uint64_t Start, uint64_t Length) {
+    return false;
+  }
   virtual void InvalidateGuestCodeRange(FEXCore::Core::InternalThreadState* Thread, uint64_t Start, uint64_t Length) {}
   virtual void MarkOvercommitRange(uint64_t Start, uint64_t Length) {}
   virtual void UnmarkOvercommitRange(uint64_t Start, uint64_t Length) {}

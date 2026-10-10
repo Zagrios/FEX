@@ -577,6 +577,17 @@ ContextImpl::GenerateIR(FEXCore::Core::InternalThreadState* Thread, uint64_t Gue
     const auto* BlockInfo = Thread->FrontendDecoder->GetDecodedBlockInfo();
     const auto& CodeBlocks = BlockInfo->Blocks;
 
+    // Pages whose writes the frontend does not track (SyscallHandler::NeedsCodeValidation): their instructions are
+    // checked before they run, as with SMCChecks=full.
+    fextl::vector<uint64_t> ValidatedPages;
+    if (Config.SMCChecks == FEXCore::Config::CONFIG_SMC_MTRACK) {
+      for (auto CodePage : BlockInfo->CodePages) {
+        if (SyscallHandler->NeedsCodeValidation(CodePage, FEXCore::Utils::FEX_PAGE_SIZE)) {
+          ValidatedPages.push_back(CodePage);
+        }
+      }
+    }
+
     Thread->OpDispatcher->BeginFunction(GuestRIP, &CodeBlocks, BlockInfo->TotalInstructionCount, BlockInfo->Is64BitMode,
                                         AreMonoHacksActive() && MonoBackpatcherBlock.load(std::memory_order_relaxed) == GuestRIP);
 
@@ -668,10 +679,15 @@ ContextImpl::GenerateIR(FEXCore::Core::InternalThreadState* Thread, uint64_t Gue
           Thread->OpDispatcher->_GuestOpcode(InstAddress - GuestRIP);
         }
 
+        const bool ValidateInst = Config.SMCChecks == FEXCore::Config::CONFIG_SMC_FULL || Block.ForceFullSMCDetection ||
+                                  std::any_of(ValidatedPages.begin(), ValidatedPages.end(), [&](uint64_t Page) {
+                                    return InstAddress < Page + FEXCore::Utils::FEX_PAGE_SIZE && InstAddress + DecodedInfo->InstSize > Page;
+                                  });
+
         // An instruction with no decoded bytes (fetch from a non-executable address, invalid or unimplemented
         // instruction) has nothing to check and raises its fault. A check of zero bytes compared the CRC with a register
         // it never computed: the block removed itself and was rebuilt in a loop, and the fault never came.
-        if ((Config.SMCChecks == FEXCore::Config::CONFIG_SMC_FULL || Block.ForceFullSMCDetection) && DecodedInfo->InstSize) {
+        if (ValidateInst && DecodedInfo->InstSize) {
           auto ExistingCodePtr = reinterpret_cast<uint8_t*>(Block.Entry + BlockInstructionsLength);
           auto InstAddressReg = Thread->OpDispatcher->_EntrypointOffset(GPRSize, InstAddress - GuestRIP);
 

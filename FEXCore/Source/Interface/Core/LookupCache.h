@@ -373,6 +373,10 @@ public:
   uintptr_t GetPagePointer() const {
     return PagePointer;
   }
+  // False when the cache's memory could not be reserved: the thread that owns it must not run.
+  bool IsAllocated() const {
+    return PagePointer != 0;
+  }
   uintptr_t GetVirtualMemorySize() const {
     return VirtualMemSize;
   }

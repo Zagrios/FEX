@@ -165,7 +165,8 @@ public:
    *
    * @param NewThreadState The initial thread state to setup for our state, if inheriting.
    *
-   * @return The InternalThreadState object that tracks all of the emulated thread's state
+   * @return The InternalThreadState object that tracks all of the emulated thread's state, or nullptr when the host
+   * has no memory left for the thread's caches
    *
    * Usecases:
    *  Parent thread Creation:
@@ -492,8 +493,10 @@ private:
    * @param State The internal FEX thread state object
    *
    * InitializeCompiler is called inside of CreateThread, so you likely don't need this
+   *
+   * @return false when the thread's lookup cache could not be allocated (out of host address space)
    */
-  void InitializeCompiler(FEXCore::Core::InternalThreadState* Thread);
+  bool InitializeCompiler(FEXCore::Core::InternalThreadState* Thread);
 
   bool SupportsHardwareTSO = false;
   bool AtomicTSOEmulationEnabled = true;

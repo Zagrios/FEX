@@ -39,7 +39,13 @@ LookupCache::LookupCache(FEXCore::Context::ContextImpl* CTX)
   // We need one pointer per page of virtual memory
   // At 64GB of virtual memory this will allocate 128MB of virtual memory space
   PagePointer = reinterpret_cast<uintptr_t>(FEXCore::Allocator::VirtualAlloc(TotalCacheSize, false, false));
-  LOGMAN_THROW_A_FMT(PagePointer != -1ULL, "Failed to allocate PagePointer");
+  if (PagePointer == ~0ULL || PagePointer == 0) {
+    // Out of host address space. Release builds have no assertions, and a cache built on the -1 of the failed mmap
+    // gives every lookup of the thread garbage L1 and L2 pointers. Stay unallocated: CreateThread checks IsAllocated()
+    // and fails, so the frontend can refuse the thread instead.
+    PagePointer = 0;
+    return;
+  }
 
   // Disable THP on the Lookup cache.
   FEXCore::Allocator::VirtualTHPControl(reinterpret_cast<const void*>(PagePointer), TotalCacheSize, FEXCore::Allocator::THPControl::Disable);
@@ -71,6 +77,9 @@ LookupCache::LookupCache(FEXCore::Context::ContextImpl* CTX)
 }
 
 LookupCache::~LookupCache() {
+  if (!PagePointer) {
+    return;
+  }
   FEXCore::Allocator::VirtualFree(reinterpret_cast<void*>(PagePointer), TotalCacheSize);
   ctx->SyscallHandler->UnmarkOvercommitRange(PagePointer, TotalCacheSize);
 

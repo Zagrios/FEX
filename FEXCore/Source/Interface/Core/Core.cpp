@@ -423,10 +423,14 @@ void ContextImpl::ExecuteThread(FEXCore::Core::InternalThreadState* Thread) {
   // TODO: This doesn't make sense when the parent thread doesn't outlive its children
 }
 
-void ContextImpl::InitializeCompiler(FEXCore::Core::InternalThreadState* Thread) {
+bool ContextImpl::InitializeCompiler(FEXCore::Core::InternalThreadState* Thread) {
   Thread->OpDispatcher = fextl::make_unique<FEXCore::IR::OpDispatchBuilder>(this, Thread);
   Thread->OpDispatcher->SetMultiblock(Config.Multiblock);
   Thread->LookupCache = fextl::make_unique<FEXCore::LookupCache>(this);
+  if (!Thread->LookupCache->IsAllocated()) {
+    // Nothing below may touch the cache (the CPU backend clears it when it attaches its code buffer).
+    return false;
+  }
   Thread->FrontendDecoder = fextl::make_unique<FEXCore::Frontend::Decoder>(Thread);
   Thread->PassManager = fextl::make_unique<FEXCore::IR::PassManager>(this);
 
@@ -443,6 +447,7 @@ void ContextImpl::InitializeCompiler(FEXCore::Core::InternalThreadState* Thread)
   // We finalize *after* the CPU backend is initialized, as the CPU backend will
   // provide necessary register information to the register allocation pass.
   Thread->PassManager->Finalize();
+  return true;
 }
 
 FEXCore::Core::InternalThreadState* ContextImpl::CreateThread(const FEXCore::Core::CPUState* NewThreadState) {
@@ -459,7 +464,11 @@ FEXCore::Core::InternalThreadState* ContextImpl::CreateThread(const FEXCore::Cor
   // Set up the thread manager state
   Thread->CurrentFrame->Thread = Thread;
 
-  InitializeCompiler(Thread);
+  if (!InitializeCompiler(Thread)) {
+    // Out of host memory for the thread's caches: no thread rather than one that faults on its first block.
+    delete Thread;
+    return nullptr;
+  }
 
   Thread->CurrentFrame->State.DeferredSignalRefCount.Store(0);
 

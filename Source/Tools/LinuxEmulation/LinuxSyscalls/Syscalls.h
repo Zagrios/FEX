@@ -205,6 +205,7 @@ public:
   FEX_CONFIG_OPT(SMCChecks, SMCCHECKS);
   FEX_CONFIG_OPT(NeedsSeccomp, NEEDSSECCOMP);
   FEX_CONFIG_OPT(EnableCodeCaching, ENABLECODECACHINGWIP);
+  FEX_CONFIG_OPT(EnableDiskCache, DISKCACHE);
 
   uint32_t GetHostKernelVersion() const {
     return HostKernelVersion;
@@ -406,6 +407,10 @@ private:
   do {                              \
     if (Result == 0) return -errno; \
     return Result;                  \
+  } while (0)
+#define SYSCALL_EFAULT_IF_NULL(Ptr)       \
+  do {                                    \
+    if ((Ptr) == nullptr) return -EFAULT; \
   } while (0)
 
 extern FEX::HLE::SyscallHandler* _SyscallHandler;

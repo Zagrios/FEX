@@ -27,6 +27,8 @@
 #include <fcntl.h>
 #ifndef _WIN32
 #include <sys/mman.h>
+#include <sys/resource.h>
+#include <unistd.h>
 #ifndef __APPLE__
 #include <sys/user.h>
 #endif
@@ -304,11 +306,62 @@ fextl::vector<MemoryRegion> CollectMemoryGaps(uintptr_t Begin, uintptr_t End, in
   FEX_UNREACHABLE;
 }
 
+// Tracks the region below the main thread stack, which is reserved for stack growth,
+// as well as the guard region directly below the stack window.
+static uintptr_t MainThreadStackReserveBegin {};
+static uintptr_t MainThreadStackWindowBegin {};
+static uintptr_t MainThreadStackWindowEnd {};
+static size_t MainThreadStackGuardSize {};
+static uintptr_t MainThreadStackGuardBegin {};
+
+// Currently, guest signal handlers leak space on the main stack
+// if they exit via longjmp instead of sigreturn. Because of this memory leak
+// we must allow the main thread stack to grow without bound. This technically
+// violates RLIMIT_STACK, but until we fix the leak, we don't have much choice.
+// TODO: Once the leak is fixed, remove this function entirely.
+bool TryGrowMainThreadStack(uintptr_t FaultAddress) {
+  // Only grow the stack when the fault is in the guard region.
+  if (FaultAddress < MainThreadStackGuardBegin || FaultAddress >= MainThreadStackWindowBegin) {
+    return false;
+  }
+
+  // Compute the required size of the stack region.
+  // Double the current stack, up to 1GB, then just add 1GB at a time.
+  constexpr size_t OneGB = 1ULL << 30;
+  const size_t RequiredSize = MainThreadStackWindowEnd - FaultAddress;
+  size_t NewSize = MainThreadStackWindowEnd - MainThreadStackWindowBegin;
+
+  while (NewSize < RequiredSize) {
+    if (NewSize < OneGB) {
+      NewSize = std::min(NewSize * 2, OneGB);
+    } else {
+      NewSize += OneGB;
+    }
+  }
+
+  // Don't grow past the bottom of the reserved region,
+  // which is where the first dynamically loaded libraries live.
+  const uintptr_t NewWindowBegin = std::max(MainThreadStackWindowEnd - NewSize, MainThreadStackReserveBegin);
+  if (mprotect(reinterpret_cast<void*>(NewWindowBegin), MainThreadStackWindowBegin - NewWindowBegin, PROT_READ | PROT_WRITE) != 0) {
+    return false;
+  }
+
+  // Move the window and the guard region below it down.
+  MainThreadStackWindowBegin = NewWindowBegin;
+  MainThreadStackGuardBegin = std::max(NewWindowBegin - MainThreadStackGuardSize, MainThreadStackReserveBegin);
+  return true;
+}
+
 fextl::vector<MemoryRegion> StealMemoryRegion(uintptr_t Begin, uintptr_t End) {
   const uintptr_t StackLocation_u64 = reinterpret_cast<uintptr_t>(alloca(0));
 
   const int MapsFD = open("/proc/self/maps", O_RDONLY);
-  LogMan::Throw::AFmt(MapsFD != -1, "Failed to open /proc/self/maps");
+  if (MapsFD == -1) {
+    // No procfs, as in BuildKit's emulator probe (an empty chroot). The assert
+    // above it compiles out in release, and CollectMemoryGaps then spins on
+    // read(-1) forever; reserve nothing instead.
+    return {};
+  }
 
   auto Regions = CollectMemoryGaps(Begin, End, MapsFD);
   close(MapsFD);
@@ -316,7 +369,7 @@ fextl::vector<MemoryRegion> StealMemoryRegion(uintptr_t Begin, uintptr_t End) {
   // If the memory bounds include the stack, blocking all memory regions will
   // limit the stack size to the current value. To allow some stack growth,
   // we don't block the memory gap directly below the stack memory but
-  // instead map it as readable+writable.
+  // instead reserve it for the stack, see TryGrowMainThreadStack.
   {
     auto StackRegionIt = std::find_if(Regions.begin(), Regions.end(), [StackLocation_u64](auto& Region) {
       return reinterpret_cast<uintptr_t>(Region.Ptr) + Region.Size > StackLocation_u64;
@@ -328,15 +381,39 @@ fextl::vector<MemoryRegion> StealMemoryRegion(uintptr_t Begin, uintptr_t End) {
 
     if (IsStackMapping && StackRegionIt != Regions.begin() &&
         reinterpret_cast<uintptr_t>(std::prev(StackRegionIt)->Ptr) + std::prev(StackRegionIt)->Size <= End) {
-      // Allocate the region under the stack as READ | WRITE so the stack can still grow
       --StackRegionIt;
 
-      auto Alloc =
-        ::mmap(StackRegionIt->Ptr, StackRegionIt->Size, PROT_READ | PROT_WRITE, MAP_ANONYMOUS | MAP_NORESERVE | MAP_PRIVATE | MAP_FIXED, -1, 0);
+      // Get the page size, so we can make sure to align on page boundaries.
+      const auto PageSize = sysconf(_SC_PAGESIZE);
+      const size_t HostPageSize = PageSize > 0 ? PageSize : FEXCore::Utils::FEX_PAGE_SIZE;
+
+      // Allocate RLIMIT_STACK worth of memory for the main thread stack, or 64MB if no limit is set.
+      struct rlimit StackLimit {};
+      size_t Size = 1ULL << 26;
+      if (getrlimit(RLIMIT_STACK, &StackLimit) == 0 && StackLimit.rlim_cur != RLIM_INFINITY) {
+        Size = std::max<size_t>(FEXCore::AlignUp(StackLimit.rlim_cur, HostPageSize), HostPageSize);
+      }
+      Size = std::min(Size, StackRegionIt->Size);
+
+      // Reserve all of the memory between the top of the stack, and the start of the next region.
+      // We must map it with PROT_NONE, otherwise the MM will assume these pages are "in use"
+      // and charge this usage towards VmData. In practice this is multiple TBs of VA space.
+      auto Alloc = ::mmap(StackRegionIt->Ptr, StackRegionIt->Size, PROT_NONE, MAP_ANONYMOUS | MAP_NORESERVE | MAP_PRIVATE | MAP_FIXED, -1, 0);
 
       LogMan::Throw::AFmt(Alloc != MAP_FAILED, "StealMemoryRegion:Stack: mmap({}, {:x}) failed: {}", fmt::ptr(StackRegionIt->Ptr),
                           StackRegionIt->Size, errno);
       LogMan::Throw::AFmt(Alloc == StackRegionIt->Ptr, "mmap returned {} instead of {}", Alloc, fmt::ptr(StackRegionIt->Ptr));
+
+      // Now determine the bounds for the stack region, and its guard region, which is used by TryGrowMainThreadStack().
+      MainThreadStackReserveBegin = reinterpret_cast<uintptr_t>(StackRegionIt->Ptr);
+      MainThreadStackWindowEnd = MainThreadStackReserveBegin + StackRegionIt->Size;
+      MainThreadStackWindowBegin = MainThreadStackWindowEnd - Size;
+      MainThreadStackGuardSize = 256 * HostPageSize;
+      MainThreadStackGuardBegin = std::max(MainThreadStackWindowBegin - MainThreadStackGuardSize, MainThreadStackReserveBegin);
+
+      // Protect the stack window.
+      const auto Result = mprotect(reinterpret_cast<void*>(MainThreadStackWindowBegin), Size, PROT_READ | PROT_WRITE);
+      LogMan::Throw::AFmt(Result == 0, "StealMemoryRegion:Stack: mprotect({:x}, {:x}) failed: {}", MainThreadStackWindowBegin, Size, errno);
 
       Regions.erase(StackRegionIt);
     }
@@ -372,6 +449,9 @@ fextl::vector<MemoryRegion> Setup48BitAllocatorIfExists(size_t PageSize) {
   uintptr_t Begin48BitVA = 0x0'8000'0000'0000ULL;
   uintptr_t End48BitVA = 0x1'0000'0000'0000ULL;
   auto Regions = StealMemoryRegion(Begin48BitVA, End48BitVA);
+  if (Regions.empty()) {
+    return {};
+  }
 
   Alloc64 = Alloc::OSAllocator::Create64BitAllocatorWithRegions(Regions);
   AssignHookOverrides(PageSize);

@@ -47,7 +47,7 @@ function(AddTests Tests BinDirectory Bitness)
 
     # Add jit test case
     add_test(NAME "${TEST_CASE}.jit.flt"
-      COMMAND "python3" "${CMAKE_SOURCE_DIR}/Scripts/guest_test_runner.py"
+      COMMAND ${PYTHON_TEST_RUNNER} "${CMAKE_SOURCE_DIR}/Scripts/guest_test_runner.py"
       "${CMAKE_CURRENT_SOURCE_DIR}/Known_Failures"
       "${CMAKE_CURRENT_SOURCE_DIR}/Expected_Output"
       "${CMAKE_CURRENT_SOURCE_DIR}/Disabled_Tests"
@@ -76,7 +76,7 @@ function(AddTests Tests BinDirectory Bitness)
     if (ARCHITECTURE_x86_64 AND NOT TEST_NAME STREQUAL "thunk_testlib" AND NOT TEST_NAME STREQUAL "vulkan_procaddr")
       # Add host test case
       add_test(NAME "${TEST_CASE}.host.flt"
-        COMMAND "python3" "${CMAKE_SOURCE_DIR}/Scripts/guest_test_runner.py"
+        COMMAND ${PYTHON_TEST_RUNNER} "${CMAKE_SOURCE_DIR}/Scripts/guest_test_runner.py"
         "${CMAKE_CURRENT_SOURCE_DIR}/Known_Failures_Host"
         "${CMAKE_CURRENT_SOURCE_DIR}/Expected_Output"
         "${CMAKE_CURRENT_SOURCE_DIR}/Disabled_Tests_Host"
@@ -124,3 +124,12 @@ add_custom_target(fex_linux_tests_all
   USES_TERMINAL
   COMMAND "ctest" "--output-on-failure" "--timeout" "30" ${TEST_JOB_FLAG} "-R" "\.*\.flt$$"
   DEPENDS FEXLinuxTests FEXLinuxTests_32 FEX)
+
+foreach(EXEC_FD_BITNESS 64 32)
+  set(EXEC_FD_CHAIN_BIN "${CMAKE_CURRENT_BINARY_DIR}/FEXLinuxTests_${EXEC_FD_BITNESS}/exec_fd_chain.${EXEC_FD_BITNESS}")
+  add_test(NAME "exec_fd_chain.${EXEC_FD_BITNESS}.jit.flt"
+    COMMAND "$<TARGET_FILE:FEX>" "${EXEC_FD_CHAIN_BIN}")
+  # Force the self-reexec fallback. FEX_ROOTFS still comes from the caller environment.
+  set_property(TEST "exec_fd_chain.${EXEC_FD_BITNESS}.jit.flt" APPEND PROPERTY ENVIRONMENT "FEX_PORTABLE=1")
+  set_property(TEST "exec_fd_chain.${EXEC_FD_BITNESS}.jit.flt" APPEND PROPERTY ENVIRONMENT "FEX_OUTPUTLOG=stderr")
+endforeach()

@@ -379,7 +379,10 @@ include(LinkerGC)
 
 ## Externals ##
 
-find_package(unordered_dense QUIET CONFIG)
+if (NOT BUILD_STEAM_SUPPORT)
+  find_package(unordered_dense QUIET CONFIG)
+endif()
+
 if (NOT unordered_dense_FOUND)
   add_subdirectory(External/unordered_dense)
 endif()
@@ -390,8 +393,10 @@ if (BUILD_TESTING OR ENABLE_VIXL_DISASSEMBLER OR ENABLE_VIXL_SIMULATOR)
 endif()
 
 if (ENABLE_ZYDIS)
-  find_package(Zycore 1.5 MODULE QUIET)
-  find_package(Zydis 4.0 MODULE QUIET)
+  if (NOT BUILD_STEAM_SUPPORT)
+    find_package(Zycore 1.5 MODULE QUIET)
+    find_package(Zydis 4.0 MODULE QUIET)
+  endif()
 
   if (TARGET Zydis::Zydis AND TARGET Zycore::Zycore)
     message(STATUS "Using system Zydis")
@@ -412,7 +417,7 @@ find_package(Python 3.9 REQUIRED COMPONENTS Interpreter)
 
 set(BUILD_SHARED_LIBS OFF)
 
-if (NOT CMAKE_CROSSCOMPILING)
+if (NOT CMAKE_CROSSCOMPILING AND NOT BUILD_STEAM_SUPPORT)
   find_package(xxhash MODULE QUIET)
 endif()
 
@@ -440,7 +445,7 @@ else ()
   file(GENERATE OUTPUT CTestTestfile.cmake CONTENT "# No tests since BUILD_TESTING is disabled")
 endif()
 
-if (MINGW)
+if (MINGW OR BUILD_STEAM_SUPPORT)
   set(FMT_INSTALL OFF)
   add_subdirectory(External/fmt/)
 else()
@@ -452,7 +457,10 @@ else()
   endif()
 endif()
 
-find_package(range-v3 QUIET)
+if (NOT BUILD_STEAM_SUPPORT)
+  find_package(range-v3 QUIET)
+endif()
+
 if (NOT range-v3_FOUND)
   add_subdirectory(External/range-v3/)
   target_compile_definitions(range-v3 INTERFACE RANGES_DISABLE_DEPRECATED_WARNINGS)
@@ -624,6 +632,22 @@ if (BUILD_TESTING)
     execute_process(COMMAND "nproc" OUTPUT_STRIP_TRAILING_WHITESPACE OUTPUT_VARIABLE TEST_JOB_COUNT)
   endif()
   set(TEST_JOB_FLAG "-j${TEST_JOB_COUNT}")
+
+  # When running "ninja tests", defined below, it is useful to intentionally
+  # oversubscribe the CPU cores since many of the tests spend their time idle.
+  if ("$CACHE{TEST_JOB_COUNT}" STREQUAL "")
+    execute_process(COMMAND "nproc" OUTPUT_STRIP_TRAILING_WHITESPACE OUTPUT_VARIABLE TESTS_TARGET_JOB_COUNT)
+    math(EXPR TESTS_TARGET_JOB_COUNT "${TESTS_TARGET_JOB_COUNT} * 3 / 2")
+    set(TESTS_TARGET_JOB_FLAG "-j${TESTS_TARGET_JOB_COUNT}")
+  else()
+    set(TESTS_TARGET_JOB_FLAG ${TEST_JOB_FLAG})
+  endif()
+
+  # Runs the whole test suite, with large pages enabled to reduce the cost of fork() in ctest.
+  add_custom_target(tests
+    WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
+    USES_TERMINAL
+    COMMAND ${CMAKE_COMMAND} -E env GLIBC_TUNABLES=glibc.malloc.hugetlb=1 ctest "--progress" "--timeout" "302" ${TESTS_TARGET_JOB_FLAG})
 endif()
 
 add_subdirectory(External/SoftFloat-3e/)

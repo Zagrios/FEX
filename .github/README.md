@@ -2,7 +2,7 @@
 
 **[FEX-Emu](https://github.com/FEX-Emu/FEX) with a Darwin port, for Voile's Linux engine.** FEXCore translates x86-64 code to arm64; this fork lets it run inside a macOS arm64 process. [voile-lkd](https://github.com/Zagrios/voile-lkd)'s host program, `fexdarwin-run`, embeds it and serves the guest's Linux system calls itself.
 
-This page is the fork's own. FEX's README is [Readme.md](../Readme.md), unchanged. This repository is private.
+This page is the fork's own. FEX's README is [Readme.md](../Readme.md), unchanged.
 
 ## What the port changes
 

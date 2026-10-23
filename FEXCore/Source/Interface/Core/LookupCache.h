@@ -177,9 +177,10 @@ public:
   }
 
   uintptr_t FindBlock(FEXCore::Core::InternalThreadState* Thread, uint64_t Address) {
-    // Try L1, no lock needed
+    // Try L1, no lock needed. Darwin port: not for address 0, which also marks the empty and invalidated entries
+    // (see the indirect branches in BranchOps.cpp).
     auto& L1Entry = reinterpret_cast<LookupCacheEntry*>(L1Pointer)[Address & L1PointerMask];
-    if (L1Entry.GuestCode == Address) {
+    if (L1Entry.GuestCode == Address && Address != 0) {
       return L1Entry.HostCode;
     }
 

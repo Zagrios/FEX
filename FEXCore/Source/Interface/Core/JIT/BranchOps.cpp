@@ -195,11 +195,17 @@ DEF_OP(ExitFunction) {
     ARMEmitter::ForwardLabel SkipFullLookup;
     auto RipReg = GetReg(Op->NewRIP);
 
+    // Darwin port: guest address 0 also marks the empty entries of the call-ret stack and of L1, and the invalidated
+    // ones of L1, which keep a stale host address. A guest that branches to address 0 on purpose, as Themida does to
+    // raise an exception, would match one and jump to host address 0 or to stale code: it takes the full lookup.
     if (Op->Hint == IR::BranchHint::Return) {
       // First try to pop from the call-ret stack, otherwise follow the normal path (but ending in a ret)
       ldp<ARMEmitter::IndexType::POST>(TMP1, TMP2, REG_CALLRET_SP, 0x10);
       sub(TMP1, TMP1, RipReg.X());
-      (void)cbz(ARMEmitter::Size::i64Bit, TMP1, &SkipFullLookup);
+      ARMEmitter::ForwardLabel NoCallRetHit;
+      (void)cbnz(ARMEmitter::Size::i64Bit, TMP1, &NoCallRetHit);
+      (void)cbnz(ARMEmitter::Size::i64Bit, RipReg.X(), &SkipFullLookup);
+      (void)Bind(&NoCallRetHit);
     }
 
     // L1 Cache
@@ -214,7 +220,10 @@ DEF_OP(ExitFunction) {
 
     // Note: sub+cbnz used over cmp+br to preserve flags.
     sub(TMP1, TMP1, RipReg.X());
-    (void)cbz(ARMEmitter::Size::i64Bit, TMP1, &SkipFullLookup);
+    ARMEmitter::ForwardLabel NoL1Hit;
+    (void)cbnz(ARMEmitter::Size::i64Bit, TMP1, &NoL1Hit);
+    (void)cbnz(ARMEmitter::Size::i64Bit, RipReg.X(), &SkipFullLookup);
+    (void)Bind(&NoL1Hit);
     ldr(TMP2, STATE, offsetof(FEXCore::Core::CpuStateFrame, Pointers.DispatcherLoopTop));
     str(RipReg.X(), STATE, offsetof(FEXCore::Core::CpuStateFrame, State.rip));
 

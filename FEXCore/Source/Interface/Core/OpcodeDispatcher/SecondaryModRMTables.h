@@ -10,6 +10,8 @@ constexpr DispatchTableEntry OpDispatch_SecondaryModRMTables[] = {
 
   // REG /2
   {((1 << 3) | 0), 1, &OpDispatchBuilder::XGetBVOp},
+  // XSETBV is ring 0 only: a user-mode program gets #GP(0), as on hardware.
+  {((1 << 3) | 1), 1, &OpDispatchBuilder::PermissionRestrictedOp},
 
   // REG /3
   {((2 << 3) | 7), 1, &OpDispatchBuilder::PermissionRestrictedOp},

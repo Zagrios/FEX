@@ -165,7 +165,8 @@ void OpDispatchBuilder::IRETOp(OpcodeArgs) {
     StoreGPRRegister(X86State::REG_RSP, SP);
   }
 
-  ExitFunction(NewRIP);
+  // IRETQ may load TF: check it on the way out like POPF, so the single-step trap is raised on the target (see BranchOps).
+  ExitFunction(NewRIP, BranchHint::CheckTF);
   BlockSetRIP = true;
 }
 
@@ -437,8 +438,10 @@ void OpDispatchBuilder::POPSegmentOp(OpcodeArgs, uint32_t SegmentReg) {
     _StoreContextGPR(DstSize, NewSegment, offsetof(FEXCore::Core::CPUState, cs_idx));
     break;
   case FEXCore::X86Tables::DecodeFlags::FLAG_SS_PREFIX:
-    // Unset the 'active' bit in the packed TF, skipping the single step exception after this instruction
-    SetRFLAG<FEXCore::X86State::RFLAG_TF_RAW_LOC>(_And(OpSize::i32Bit, GetRFLAG(FEXCore::X86State::RFLAG_TF_RAW_LOC), Constant(1)));
+    // Unset the 'active' bit in the packed TF, skipping the single step exception after this instruction. Stored
+    // directly: SetRFLAG keeps an armed TF armed (POPF, IRET), which would undo the interrupt shadow.
+    _StoreContextGPR(OpSize::i8Bit, _And(OpSize::i32Bit, GetRFLAG(FEXCore::X86State::RFLAG_TF_RAW_LOC), Constant(1)),
+                     ARRAY_OFFSETOF(FEXCore::Core::CPUState, flags, FEXCore::X86State::RFLAG_TF_RAW_LOC));
     _StoreContextGPR(DstSize, NewSegment, offsetof(FEXCore::Core::CPUState, ss_idx));
     break;
   case FEXCore::X86Tables::DecodeFlags::FLAG_DS_PREFIX:

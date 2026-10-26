@@ -1875,8 +1875,11 @@ private:
       // An exception should still be raised after an instruction that unsets TF, leave the unblocked bit set but unset
       // the TF bit to cause such behaviour. The handling code at the start of the next block will then unset the
       // unblocked bit before raising the exception.
-      auto NewPackedTF =
-        _Select(OpSize::i64Bit, OpSize::i64Bit, CondClass::EQ, Value, Constant(0), _And(OpSize::i32Bit, PackedTF, Constant(~1)), Constant(1));
+      // Setting TF blocks the trap for one instruction only when TF was clear: x86 traps after an instruction that began
+      // with TF set, so an instruction that rewrites an armed TF (packed 0b11; IRETQ right after the POPFQ that set it, as
+      // in Wine's syscall return) keeps the unblocked bit and traps on its target.
+      auto NewPackedTF = _Select(OpSize::i64Bit, OpSize::i64Bit, CondClass::EQ, Value, Constant(0), _And(OpSize::i32Bit, PackedTF, Constant(~1)),
+                                 _Select(OpSize::i64Bit, OpSize::i64Bit, CondClass::EQ, PackedTF, Constant(3), Constant(3), Constant(1)));
       _StoreContextGPR(OpSize::i8Bit, NewPackedTF, ARRAY_OFFSETOF(FEXCore::Core::CPUState, flags, BitOffset));
     } else {
       _StoreContextGPR(OpSize::i8Bit, Value, ARRAY_OFFSETOF(FEXCore::Core::CPUState, flags, BitOffset));

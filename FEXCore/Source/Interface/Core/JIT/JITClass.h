@@ -83,6 +83,8 @@ private:
   // In the rare case when those assumptions are broken, FEX needs to safely restart the JIT.
   RestartOptions RestartControl {};
   bool RequiresFarARM64Jumps {};
+  // TF was set when this block was compiled: its exits recheck it and go through the dispatcher (ExitFunction).
+  bool CompilingWithTF {};
   // Default to 6 instructions per SSA node.
   uint32_t SSANodeMultiplier {24};
 

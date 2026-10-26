@@ -906,6 +906,16 @@ ContextImpl::CompileCodeResult ContextImpl::CompileCode(FEXCore::Core::InternalT
   };
 }
 
+namespace {
+// SyscallHandler::PostCompile on every way out of a compilation.
+struct PostCompileGuard {
+  FEXCore::HLE::SyscallHandler* Handler;
+  ~PostCompileGuard() {
+    Handler->PostCompile();
+  }
+};
+} // namespace
+
 uintptr_t ContextImpl::CompileBlock(FEXCore::Core::CpuStateFrame* Frame, uint64_t GuestRIP, uint64_t MaxInst) {
   if constexpr (BLOCK_DEBUGGING) {
     // Block debugging logic is hand-written and needs to be handled with care.
@@ -923,6 +933,7 @@ uintptr_t ContextImpl::CompileBlock(FEXCore::Core::CpuStateFrame* Frame, uint64_
   FEXCORE_PROFILE_ACCUMULATION(Thread, AccumulatedJITTime);
 
   static_cast<ContextImpl*>(Thread->CTX)->SyscallHandler->PreCompile();
+  PostCompileGuard PostCompile {SyscallHandler};
 
   // Invalidate might take a unique lock on this, to guarantee that during invalidation no code gets compiled
   auto lk = GuardSignalDeferringSection<std::shared_lock>(CodeInvalidationMutex, Thread);
@@ -1086,6 +1097,7 @@ uintptr_t ContextImpl::CompileSingleStep(FEXCore::Core::CpuStateFrame* Frame, ui
   auto Thread = Frame->Thread;
 
   static_cast<ContextImpl*>(Thread->CTX)->SyscallHandler->PreCompile();
+  PostCompileGuard PostCompile {SyscallHandler};
 
   // Invalidate might take a unique lock on this, to guarantee that during invalidation no code gets compiled
   auto lk = GuardSignalDeferringSection<std::shared_lock>(CodeInvalidationMutex, Thread);

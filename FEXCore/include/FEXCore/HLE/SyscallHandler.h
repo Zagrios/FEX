@@ -47,6 +47,8 @@ public:
   virtual std::optional<ExecutableFileSectionInfo> LookupExecutableFileSection(Core::InternalThreadState* Thread, uint64_t GuestAddr) = 0;
 
   virtual void PreCompile() {}
+  // After every block compilation (the decoder has read the guest's code), on every path out of it.
+  virtual void PostCompile() {}
 
   virtual SourcecodeResolver* GetSourcecodeResolver() {
     return nullptr;

@@ -7,6 +7,7 @@ $end_info$
 */
 #pragma once
 
+#include <FEXCore/Core/PatchRegion.h>
 #include <FEXCore/fextl/memory.h>
 #include <FEXCore/Utils/MathUtils.h>
 #include <FEXCore/Utils/SignalScopeGuards.h>
@@ -68,7 +69,13 @@ struct CodeBuffer {
 
   // Returns the total number of bytes available for storing code
   size_t UsableSize() const {
-    return AllocatedSize - FEXCore::Utils::FEX_HOST_PAGE_SIZE;
+    return AllocatedSize - FEXCore::Utils::FEX_HOST_PAGE_SIZE - PatchRegionSize();
+  }
+
+  // The bytes at the end kept for patch stubs, 1/16 of the buffer, when the frontend asked for them
+  // (FEXCore/Core/PatchRegion.h).
+  size_t PatchRegionSize() const {
+    return FEXCore::CPU::PatchRegion.Allocated ? FEXCore::AlignDown(AllocatedSize / 16, FEXCore::Utils::FEX_HOST_PAGE_SIZE) : 0;
   }
 
   // Returns the full size of the buffer, including the guard page.

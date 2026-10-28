@@ -46,9 +46,15 @@ CodeBuffer::CodeBuffer(size_t Size, bool ShouldBeNamed)
 
   CodeBufferEnd = Ptr + UsableSize();
   CodeBufferOffset = Ptr;
+  if (PatchRegionSize()) {
+    PatchRegion.Allocated(reinterpret_cast<uint64_t>(Ptr), reinterpret_cast<uint64_t>(CodeBufferEnd), PatchRegionSize());
+  }
 }
 
 CodeBuffer::~CodeBuffer() {
+  if (PatchRegionSize()) {
+    PatchRegion.Freed(reinterpret_cast<uint64_t>(CodeBufferEnd));
+  }
   FEXCore::Allocator::VirtualFree(Ptr, AllocatedSize);
 }
 

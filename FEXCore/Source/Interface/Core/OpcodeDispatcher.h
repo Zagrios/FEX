@@ -366,6 +366,19 @@ public:
   void ALURAXOp(OpcodeArgs, FEXCore::IR::IROps ALUIROp);
   void ALUOp(OpcodeArgs, FEXCore::IR::IROps ALUIROp, FEXCore::IR::IROps AtomicFetchOp, unsigned SrcIdx, bool DestRAX);
   void LSLOp(OpcodeArgs);
+  void LAROp(OpcodeArgs);
+  void VERROp(OpcodeArgs);
+  void VERWOp(OpcodeArgs);
+  void SLDTOp(OpcodeArgs);
+  void STROp(OpcodeArgs);
+  struct SegmentDescriptor {
+    Ref Valid, Limit, Rights;
+  };
+  SegmentDescriptor LinuxUserSegment(Ref Selector);
+  void SegmentQueryOp(OpcodeArgs, Ref SegmentDescriptor::* Field);
+  void StoreSegmentQuery(OpcodeArgs, Ref Value);
+  void RaiseGPUnless(OpcodeArgs, Ref Cond, CondClass CC);
+  Ref UserRFLAGS(Ref Popped);
   void INTOp(OpcodeArgs);
   void SyscallOp(OpcodeArgs, bool IsSyscallInst);
   void ThunkOp(OpcodeArgs);

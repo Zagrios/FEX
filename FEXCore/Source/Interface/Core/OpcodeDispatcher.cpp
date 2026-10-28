@@ -31,6 +31,13 @@ $end_info$
 #include <cstdint>
 
 namespace FEXCore::IR {
+// RFLAGS bits POPF and IRET load in ring 3 with IOPL 0: CF PF AF ZF SF TF DF OF NT AC ID.
+constexpr uint64_t UserWritableRFLAGS = 0x244dd5;
+
+// The RFLAGS a ring 3 POPF or IRET of Popped leaves: IOPL, IF, VM, VIF and VIP kept, bits 1 and 9 (IF) always set.
+Ref OpDispatchBuilder::UserRFLAGS(Ref Popped) {
+  return _Or(OpSize::i64Bit, _And(OpSize::i64Bit, Popped, Constant(UserWritableRFLAGS)), Constant(0x202));
+}
 
 using X86Tables::OpToIndex;
 
@@ -139,6 +146,12 @@ void OpDispatchBuilder::IRETOp(OpcodeArgs) {
 
   const auto GPRSize = GetGPROpSize();
 
+  if (Is64BitMode) {
+    // IRET with NT set is a return to the previous task, which long mode does not have: #GP(0) before any pop.
+    // Embark's THEIA packer checks this, as Rosetta compatibility patches for THE FINALS do.
+    RaiseGPUnless(Op, GetRFLAG(X86State::RFLAG_NT_LOC), CondClass::EQ);
+  }
+
   Ref SP = _RMWHandle(LoadGPRRegister(X86State::REG_RSP));
 
   // RIP (64/32/16 bits)
@@ -148,8 +161,8 @@ void OpDispatchBuilder::IRETOp(OpcodeArgs) {
   _StoreContextGPR(OpSize::i16Bit, NewSegmentCS, offsetof(FEXCore::Core::CPUState, cs_idx));
   UpdatePrefixFromSegment(NewSegmentCS, FEXCore::X86Tables::DecodeFlags::FLAG_CS_PREFIX);
 
-  // eflags (lower 16 used)
-  SetPackedRFLAG(false, Pop(GPRSize, SP));
+  // eflags (lower 16 used); ring 3 cannot change IOPL, IF, VM, VIF or VIP, as with POPF.
+  SetPackedRFLAG(false, UserRFLAGS(Pop(GPRSize, SP)));
 
   if (Is64BitMode) {
     // RSP and SS only happen in 64-bit mode or if this is a CPL mode jump!
@@ -1246,6 +1259,24 @@ void OpDispatchBuilder::MOVSegOp(OpcodeArgs, bool ToSeg) {
 
   if (ToSeg) {
     Ref Src = LoadSourceGPR_WithOpSize(Op, Op->Src[0], OpSize::i16Bit, Op->Flags);
+
+    // A selector that names no descriptor ring 3 may load is #GP(selector) before the load, as on hardware: DS and ES
+    // take null or one of the user segments, SS only __USER_DS with RPL 3.
+    const auto SegReg = Op->Dest.Data.GPR.GPR;
+    const bool IsSS = SegReg == FEXCore::X86State::REG_RDX || SegReg == FEXCore::X86State::REG_R10;
+    const bool IsDataSeg = IsSS || SegReg == FEXCore::X86State::REG_RAX || SegReg == FEXCore::X86State::REG_R8 ||
+                           SegReg == FEXCore::X86State::REG_RBX || SegReg == FEXCore::X86State::REG_R11;
+    if (Is64BitMode && IsDataSeg) {
+      Ref Valid {};
+      if (IsSS) {
+        Valid = _Select(OpSize::i32Bit, OpSize::i32Bit, CondClass::EQ, Src, Constant(0x2b), Constant(1), Constant(0));
+      } else {
+        auto Null = _Select(OpSize::i32Bit, OpSize::i32Bit, CondClass::EQ, _And(OpSize::i32Bit, Src, Constant(0xfffc)),
+                            Constant(0), Constant(1), Constant(0));
+        Valid = _Or(OpSize::i32Bit, Null, LinuxUserSegment(Src).Valid);
+      }
+      RaiseGPUnless(Op, Valid, CondClass::NEQ);
+    }
 
     switch (Op->Dest.Data.GPR.GPR) {
     case FEXCore::X86State::REG_RAX: // ES
@@ -3691,8 +3722,9 @@ void OpDispatchBuilder::POPFOp(OpcodeArgs) {
   // Add back our flag constants
   // Bit 1 is always 1
   // Bit 9 is always 1 because we always have interrupts enabled
+  // Ring 3 with IOPL 0 keeps IOPL, IF, VM, VIF and VIP, and POPF clears RF.
 
-  Src = _Or(OpSize::i64Bit, Src, Constant(0x202));
+  Src = UserRFLAGS(Src);
 
   SetPackedRFLAG(false, Src);
 
@@ -4809,10 +4841,72 @@ void OpDispatchBuilder::ALUOp(OpcodeArgs, FEXCore::IR::IROps ALUIROp, FEXCore::I
   }
 }
 
+// The descriptors a Linux x86-64 process can see from ring 3 (arch/x86/include/asm/segment.h): __USER32_CS 0x23,
+// __USER_DS 0x2b, __USER_CS 0x33 (all flat, DPL 3) and the per-CPU segment 0x7b, whose limit holds the CPU number as
+// RDTSCP reports it. Every other GDT entry is DPL 0 and there is no LDT: LAR, LSL, VERR and VERW clear ZF for them.
+// Anti-cheats compare these answers with real hardware.
+OpDispatchBuilder::SegmentDescriptor OpDispatchBuilder::LinuxUserSegment(Ref Selector) {
+  auto Masked = _And(OpSize::i32Bit, Selector, Constant(0xfffc));
+  auto Is = [&](uint32_t Sel) {
+    return _Select(OpSize::i32Bit, OpSize::i32Bit, CondClass::EQ, Masked, Constant(Sel), Constant(1), Constant(0));
+  };
+  auto Is20 = Is(0x20), Is28 = Is(0x28), Is30 = Is(0x30), Is78 = Is(0x78);
+  auto Valid = _Or(OpSize::i32Bit, _Or(OpSize::i32Bit, Is20, Is28), _Or(OpSize::i32Bit, Is30, Is78));
+  auto Limit = _Select(OpSize::i32Bit, OpSize::i64Bit, CondClass::NEQ, Is78, Constant(0), _ProcessorID(), Constant(0xffffffff));
+  auto Rights = _Select(OpSize::i32Bit, OpSize::i64Bit, CondClass::NEQ, Is20, Constant(0), Constant(0xcffb00),
+                        _Select(OpSize::i32Bit, OpSize::i64Bit, CondClass::NEQ, Is28, Constant(0), Constant(0xcff300),
+                                _Select(OpSize::i32Bit, OpSize::i64Bit, CondClass::NEQ, Is30, Constant(0), Constant(0xaffb00),
+                                        Constant(0x40f500))));
+  return {Valid, Limit, Rights};
+}
+
+// LSL and LAR: Field of the selector's descriptor; an invalid selector leaves the destination as it was.
+void OpDispatchBuilder::SegmentQueryOp(OpcodeArgs, Ref SegmentDescriptor::* Field) {
+  auto Desc = LinuxUserSegment(LoadSourceGPR(Op, Op->Src[0], Op->Flags));
+  const auto DstSize = OpSizeFromDst(Op);
+  auto Old = LoadSourceGPR_WithOpSize(Op, Op->Dest, DstSize, Op->Flags);
+  auto Result = _Select(OpSize::i32Bit, OpSize::i64Bit, CondClass::NEQ, Desc.Valid, Constant(0), Desc.*Field, Old);
+  StoreResultGPR_WithOpSize(Op, Op->Dest, Result, DstSize);
+  SetRFLAG<FEXCore::X86State::RFLAG_ZF_RAW_LOC>(Desc.Valid);
+}
+
 void OpDispatchBuilder::LSLOp(OpcodeArgs) {
-  // Emulate by always returning failure, this deviates from both Linux and Windows but
-  // shouldn't be depended on by anything.
-  SetRFLAG<FEXCore::X86State::RFLAG_ZF_RAW_LOC>(Constant(0));
+  SegmentQueryOp(Op, &SegmentDescriptor::Limit);
+}
+
+void OpDispatchBuilder::LAROp(OpcodeArgs) {
+  SegmentQueryOp(Op, &SegmentDescriptor::Rights);
+}
+
+void OpDispatchBuilder::VERROp(OpcodeArgs) {
+  // The four user segments are all readable (code ones are execute/read).
+  SetRFLAG<FEXCore::X86State::RFLAG_ZF_RAW_LOC>(LinuxUserSegment(LoadSourceGPR(Op, Op->Src[0], Op->Flags)).Valid);
+}
+
+void OpDispatchBuilder::VERWOp(OpcodeArgs) {
+  // Only __USER_DS is writable.
+  auto Masked = _And(OpSize::i32Bit, LoadSourceGPR(Op, Op->Src[0], Op->Flags), Constant(0xfffc));
+  SetRFLAG<FEXCore::X86State::RFLAG_ZF_RAW_LOC>(
+    _Select(OpSize::i32Bit, OpSize::i32Bit, CondClass::EQ, Masked, Constant(0x28), Constant(1), Constant(0)));
+}
+
+// SLDT and STR write a selector: 16 bits to memory, zero-extended to a register.
+void OpDispatchBuilder::StoreSegmentQuery(OpcodeArgs, Ref Value) {
+  auto DstSize = DestIsMem(Op) ? OpSize::i16Bit : OpSizeFromDst(Op);
+  if (DstSize == OpSize::i32Bit) {
+    DstSize = OpSize::i64Bit;
+  }
+  StoreResultGPR_WithOpSize(Op, Op->Dest, Value, DstSize);
+}
+
+void OpDispatchBuilder::SLDTOp(OpcodeArgs) {
+  // No LDT.
+  StoreSegmentQuery(Op, Constant(0));
+}
+
+void OpDispatchBuilder::STROp(OpcodeArgs) {
+  // GDT_ENTRY_TSS 8; Windows reports 0x40 as well.
+  StoreSegmentQuery(Op, Constant(0x40));
 }
 
 void OpDispatchBuilder::INTOp(OpcodeArgs) {
@@ -4822,6 +4916,17 @@ void OpDispatchBuilder::INTOp(OpcodeArgs) {
   switch (Op->OP) {
   case 0xCD: { // INT imm8
     uint8_t Literal = Op->Src[0].Literal();
+
+    // Linux gives ring 3 two interrupt gates of its own: #BP (3) and #OF (4). INT 3 and INT 4 written with CD raise them
+    // like INT3 (CC) and INTO, a trap with RIP after the instruction; any other vector is #GP.
+    if (Literal == 3 || Literal == 4) {
+      Reason.ErrorRegister = 0;
+      Reason.Signal = Literal == 3 ? Core::FAULT_SIGTRAP : Core::FAULT_SIGSEGV;
+      Reason.TrapNumber = Literal == 3 ? X86State::X86_TRAPNO_BP : X86State::X86_TRAPNO_OF;
+      Reason.si_code = 0x80;
+      SetRIPToNext = true;
+      break;
+    }
 
     if (CTX->HostFeatures.HostType == FEXCore::HostFeatures::HostTypeEnum::Linux) {
       constexpr uint8_t SYSCALL_LITERAL = 0x80;
@@ -5154,6 +5259,28 @@ void OpDispatchBuilder::RDRANDOp(OpcodeArgs, bool Reseed) {
     _RmifNZCV(CF_inv, (64 - 1) /* rotate bit 0 into bit 1 = C */, 0xf);
     CFInverted = true;
   }
+}
+
+// #GP(0) at this instruction unless Cond satisfies CC; the code emitted after this runs otherwise.
+void OpDispatchBuilder::RaiseGPUnless(OpcodeArgs, Ref Cond, CondClass CC) {
+  FlushRegisterCache();
+  CalculateDeferredFlags();
+  auto CondJump_ = CondJump(Cond, CC);
+  auto FaultBlock = CreateNewCodeBlockAfter(GetCurrentBlock());
+  SetFalseJumpTarget(CondJump_, FaultBlock);
+  SetCurrentCodeBlock(FaultBlock);
+  StartNewBlock();
+  _StoreContextGPR(GetGPROpSize(), GetRelocatedPC(Op, -Op->InstSize), offsetof(FEXCore::Core::CPUState, rip));
+  Break(FEXCore::IR::BreakDefinition {
+    .ErrorRegister = 0,
+    .Signal = Core::FAULT_SIGSEGV,
+    .TrapNumber = X86State::X86_TRAPNO_GP,
+    .si_code = 0x80,
+  });
+  auto Continue = CreateNewCodeBlockAfter(FaultBlock);
+  SetTrueJumpTarget(CondJump_, Continue);
+  SetCurrentCodeBlock(Continue);
+  StartNewBlock();
 }
 
 void OpDispatchBuilder::BreakOp(OpcodeArgs, FEXCore::IR::BreakDefinition BreakDefinition) {

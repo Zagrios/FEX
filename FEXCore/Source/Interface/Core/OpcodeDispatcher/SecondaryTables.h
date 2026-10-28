@@ -5,6 +5,7 @@
 namespace FEXCore::IR {
 constexpr DispatchTableEntry OpDispatch_TwoByteOpTable[] = {
   // Instructions
+  {0x02, 1, &OpDispatchBuilder::LAROp},
   {0x03, 1, &OpDispatchBuilder::LSLOp},
   {0x06, 4, &OpDispatchBuilder::PermissionRestrictedOp},
   {0x0B, 1, &OpDispatchBuilder::INTOp},

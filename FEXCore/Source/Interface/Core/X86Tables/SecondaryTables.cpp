@@ -55,7 +55,7 @@ constexpr std::array<X86InstInfo, MAX_SECOND_TABLE_SIZE> SecondBaseOps = []() co
     {0x00, 1, X86InstInfo{"",           TYPE_GROUP_6, FLAGS_MODRM | FLAGS_NO_OVERLAY,                                                                                 0}},
     {0x01, 1, X86InstInfo{"",           TYPE_GROUP_7, FLAGS_NO_OVERLAY,                                                                                 0}},
     // These two load segment register data
-    {0x02, 1, X86InstInfo{"LAR",        TYPE_UNDEC, FLAGS_NO_OVERLAY,                                                                                   0}},
+    {0x02, 1, X86InstInfo{"LAR",        TYPE_INST, GenFlagsSrcSize(SIZE_16BIT) | FLAGS_MODRM | FLAGS_NO_OVERLAY,                                         0}},
     {0x03, 1, X86InstInfo{"LSL",        TYPE_INST, GenFlagsSrcSize(SIZE_16BIT) | FLAGS_MODRM | FLAGS_NO_OVERLAY,                                                                                    0}},
     {0x04, 1, X86InstInfo{"",           TYPE_INVALID, FLAGS_NO_OVERLAY,                                                                                 0}},
     {0x05, 1, X86InstInfo{"",           TYPE_ARCH_DISPATCHER, FLAGS_NONE, 0, { .Indirect = Secondary_ArchSelect_LUT[ENTRY_05] }}},

@@ -1146,6 +1146,10 @@ void ContextImpl::InvalidateThreadCachedCodeRange(FEXCore::Core::InternalThreadS
   }
 }
 
+void ContextImpl::StopDecodeAtNonExecutable(FEXCore::Core::InternalThreadState* Thread) {
+  Thread->FrontendDecoder->StopAtNonExecutable();
+}
+
 void ContextImpl::ThreadRemoveCodeEntryFromJit(FEXCore::Core::CpuStateFrame* Frame, uint64_t GuestRIP) {
   static_cast<ContextImpl*>(Frame->Thread->CTX)->SyscallHandler->InvalidateGuestCodeRange(Frame->Thread, GuestRIP, 1);
 }

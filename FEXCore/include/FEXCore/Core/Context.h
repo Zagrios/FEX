@@ -147,6 +147,10 @@ public:
   FEX_DEFAULT_VISIBILITY virtual void InvalidateCodeBuffersCodeRange(uint64_t Start, uint64_t Length) = 0;
   FEX_DEFAULT_VISIBILITY virtual void
   InvalidateThreadCachedCodeRange(FEXCore::Core::InternalThreadState* Thread, uint64_t Start, uint64_t Length) = 0;
+  // From a fault handler interrupting the decoder of Thread: the guest code it reads lost its execute permission since
+  // the decoder checked it (a protection change on another thread, which invalidates translations only afterwards).
+  // The instruction becomes a non-executable fetch; the caller makes the faulting read return anything.
+  FEX_DEFAULT_VISIBILITY virtual void StopDecodeAtNonExecutable(FEXCore::Core::InternalThreadState* Thread) = 0;
   FEX_DEFAULT_VISIBILITY virtual FEXCore::Utils::WritePriorityMutex::Mutex& GetCodeInvalidationMutex() = 0;
 
   FEX_DEFAULT_VISIBILITY virtual void

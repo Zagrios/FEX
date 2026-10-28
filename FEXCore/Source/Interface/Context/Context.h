@@ -227,6 +227,7 @@ public:
   void ClearCodeCache(FEXCore::Core::InternalThreadState* Thread, bool NewCodeBuffer = true) override;
   void InvalidateCodeBuffersCodeRange(uint64_t Start, uint64_t Length) override;
   void InvalidateThreadCachedCodeRange(FEXCore::Core::InternalThreadState* Thread, uint64_t Start, uint64_t Length) override;
+  void StopDecodeAtNonExecutable(FEXCore::Core::InternalThreadState* Thread) override;
   FEXCore::Utils::WritePriorityMutex::Mutex& GetCodeInvalidationMutex() override {
     return CodeInvalidationMutex;
   }

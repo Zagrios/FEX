@@ -89,6 +89,13 @@ public:
     ExecutableRangeBase = ExecutableRangeEnd = 0;
   }
 
+  // The instruction being decoded reads memory that stopped being executable after CheckRangeExecutable: roll it back
+  // as a non-executable fetch, and check the following reads again.
+  void StopAtNonExecutable() {
+    HitNonExecutableRange = true;
+    ResetExecutableRangeCache();
+  }
+
 private:
   // To pass any information from instruction prefixes
   // down into the actual instruction handling machinery.

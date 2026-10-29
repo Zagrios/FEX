@@ -4706,6 +4706,8 @@ OpDispatchBuilder::OpDispatchBuilder(FEXCore::Context::ContextImpl* ctx, FEXCore
 }
 
 void OpDispatchBuilder::ResetWorkingList() {
+  // A new compilation reuses the IR buffers: no Ref of the previous one is valid.
+  ForgetHostBases();
   IREmitter::ReownOrClaimBuffer();
 
   JumpTargets.clear();

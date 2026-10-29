@@ -349,6 +349,17 @@ DEF_OP(StoreContextIndexed) {
   }
 }
 
+DEF_OP(GuestToHost) {
+  const auto Op = IROp->C<IR::IROp_GuestToHost>();
+  const auto Dst = GetReg(Node);
+  const auto Src = GetReg(Op->Addr);
+#ifdef FEX_GUEST_BASE
+  add(ARMEmitter::Size::i64Bit, Dst, GUESTBASE, Src, ARMEmitter::ShiftType::LSL, 0);
+#else
+  mov(ARMEmitter::Size::i64Bit, Dst, Src);
+#endif
+}
+
 DEF_OP(FormContextAddress) {
   const auto Op = IROp->C<IR::IROp_FormContextAddress>();
   const auto Index = GetReg(Op->Index);
@@ -705,8 +716,9 @@ DEF_OP(LoadMem) {
   const auto Op = IROp->C<IR::IROp_LoadMem>();
   const auto OpSize = IROp->Size;
 
-  const auto MemReg = MemPtr(Op->Addr, TMP1);
-  const auto MemSrc = GenerateMemOperand(OpSize, MemReg, Op->Offset, Op->OffsetType, Op->OffsetScale);
+  const auto MemReg = MemPtr(Op->Addr, Op->OffsetScale, TMP1);
+  const uint8_t OffsetScale = Op->OffsetScale & ~IR::OffsetScaleHostBase;
+  const auto MemSrc = GenerateMemOperand(OpSize, MemReg, Op->Offset, Op->OffsetType, OffsetScale);
 
   if (Op->Class == IR::RegClass::GPR) {
     const auto Dst = GetReg(Node);
@@ -729,7 +741,7 @@ DEF_OP(LoadMem) {
     case IR::OpSize::i128Bit: ldr(Dst.Q(), MemSrc); break;
     case IR::OpSize::i256Bit: {
       LOGMAN_THROW_A_FMT(HostSupportsSVE256, "Need SVE256 support in order to use {} with 256-bit operation", __func__);
-      const auto Operand = GenerateSVEMemOperand(OpSize, MemReg, Op->Offset, Op->OffsetType, Op->OffsetScale);
+      const auto Operand = GenerateSVEMemOperand(OpSize, MemReg, Op->Offset, Op->OffsetType, OffsetScale);
       ld1b<ARMEmitter::SubRegSize::i8Bit>(Dst.Z(), PRED_TMP_32B.Zeroing(), Operand);
       break;
     }
@@ -768,11 +780,12 @@ DEF_OP(LoadMemTSO) {
   const auto Op = IROp->C<IR::IROp_LoadMemTSO>();
   const auto OpSize = IROp->Size;
 
-  const auto MemReg = MemPtr(Op->Addr, TMP1);
+  const auto MemReg = MemPtr(Op->Addr, Op->OffsetScale, TMP1);
+  const uint8_t OffsetScale = Op->OffsetScale & ~IR::OffsetScaleHostBase;
 
   if (Op->Class == IR::RegClass::GPR) {
     LOGMAN_THROW_A_FMT(Op->Offset.IsInvalid() || CTX->HostFeatures.SupportsTSOImm9, "unexpected offset");
-    LOGMAN_THROW_A_FMT(Op->OffsetScale == 1, "unexpected offset scale");
+    LOGMAN_THROW_A_FMT(OffsetScale == 1, "unexpected offset scale");
     LOGMAN_THROW_A_FMT(Op->OffsetType == IR::MemOffsetType::SXTX, "unexpected offset type");
   }
 
@@ -830,7 +843,7 @@ DEF_OP(LoadMemTSO) {
     }
   } else {
     const auto Dst = GetVReg(Node);
-    const auto MemSrc = GenerateMemOperand(OpSize, MemReg, Op->Offset, Op->OffsetType, Op->OffsetScale);
+    const auto MemSrc = GenerateMemOperand(OpSize, MemReg, Op->Offset, Op->OffsetType, OffsetScale);
     switch (OpSize) {
     case IR::OpSize::i8Bit: ldrb(Dst, MemSrc); break;
     case IR::OpSize::i16Bit: ldrh(Dst, MemSrc); break;
@@ -839,7 +852,7 @@ DEF_OP(LoadMemTSO) {
     case IR::OpSize::i128Bit: ldr(Dst.Q(), MemSrc); break;
     case IR::OpSize::i256Bit: {
       LOGMAN_THROW_A_FMT(HostSupportsSVE256, "Need SVE256 support in order to use {} with 256-bit operation", __func__);
-      const auto MemSrc = GenerateSVEMemOperand(OpSize, MemReg, Op->Offset, Op->OffsetType, Op->OffsetScale);
+      const auto MemSrc = GenerateSVEMemOperand(OpSize, MemReg, Op->Offset, Op->OffsetType, OffsetScale);
       ld1b<ARMEmitter::SubRegSize::i8Bit>(Dst.Z(), PRED_TMP_32B.Zeroing(), MemSrc);
       break;
     }
@@ -1736,8 +1749,9 @@ DEF_OP(StoreMem) {
   const auto Op = IROp->C<IR::IROp_StoreMem>();
   const auto OpSize = IROp->Size;
 
-  const auto MemReg = MemPtr(Op->Addr, TMP1);
-  const auto MemSrc = GenerateMemOperand(OpSize, MemReg, Op->Offset, Op->OffsetType, Op->OffsetScale);
+  const auto MemReg = MemPtr(Op->Addr, Op->OffsetScale, TMP1);
+  const uint8_t OffsetScale = Op->OffsetScale & ~IR::OffsetScaleHostBase;
+  const auto MemSrc = GenerateMemOperand(OpSize, MemReg, Op->Offset, Op->OffsetType, OffsetScale);
 
   if (Op->Class == IR::RegClass::GPR) {
     const auto Src = GetZeroableReg(Op->Value);
@@ -1774,7 +1788,7 @@ DEF_OP(StoreMem) {
     }
     case IR::OpSize::i256Bit: {
       LOGMAN_THROW_A_FMT(HostSupportsSVE256, "Need SVE256 support in order to use {} with 256-bit operation", __func__);
-      const auto MemSrc = GenerateSVEMemOperand(OpSize, MemReg, Op->Offset, Op->OffsetType, Op->OffsetScale);
+      const auto MemSrc = GenerateSVEMemOperand(OpSize, MemReg, Op->Offset, Op->OffsetType, OffsetScale);
       st1b<ARMEmitter::SubRegSize::i8Bit>(Src.Z(), PRED_TMP_32B, MemSrc);
       break;
     }
@@ -1875,11 +1889,12 @@ DEF_OP(StoreMemTSO) {
   const auto Op = IROp->C<IR::IROp_StoreMemTSO>();
   const auto OpSize = IROp->Size;
 
-  const auto MemReg = MemPtr(Op->Addr, TMP1);
+  const auto MemReg = MemPtr(Op->Addr, Op->OffsetScale, TMP1);
+  const uint8_t OffsetScale = Op->OffsetScale & ~IR::OffsetScaleHostBase;
 
   if (Op->Class == IR::RegClass::GPR) {
     LOGMAN_THROW_A_FMT(Op->Offset.IsInvalid() || CTX->HostFeatures.SupportsTSOImm9, "unexpected offset");
-    LOGMAN_THROW_A_FMT(Op->OffsetScale == 1, "unexpected offset scale");
+    LOGMAN_THROW_A_FMT(OffsetScale == 1, "unexpected offset scale");
     LOGMAN_THROW_A_FMT(Op->OffsetType == IR::MemOffsetType::SXTX, "unexpected offset type");
   }
 
@@ -1926,7 +1941,7 @@ DEF_OP(StoreMemTSO) {
       dmb(ARMEmitter::BarrierScope::ISH);
     }
     const auto Src = GetVReg(Op->Value);
-    const auto MemSrc = GenerateMemOperand(OpSize, MemReg, Op->Offset, Op->OffsetType, Op->OffsetScale);
+    const auto MemSrc = GenerateMemOperand(OpSize, MemReg, Op->Offset, Op->OffsetType, OffsetScale);
     switch (OpSize) {
     case IR::OpSize::i8Bit: strb(Src, MemSrc); break;
     case IR::OpSize::i16Bit: strh(Src, MemSrc); break;
@@ -1935,7 +1950,7 @@ DEF_OP(StoreMemTSO) {
     case IR::OpSize::i128Bit: str(Src.Q(), MemSrc); break;
     case IR::OpSize::i256Bit: {
       LOGMAN_THROW_A_FMT(HostSupportsSVE256, "Need SVE256 support in order to use {} with 256-bit operation", __func__);
-      const auto Operand = GenerateSVEMemOperand(OpSize, MemReg, Op->Offset, Op->OffsetType, Op->OffsetScale);
+      const auto Operand = GenerateSVEMemOperand(OpSize, MemReg, Op->Offset, Op->OffsetType, OffsetScale);
       st1b<ARMEmitter::SubRegSize::i8Bit>(Src.Z(), PRED_TMP_32B, Operand);
       break;
     }

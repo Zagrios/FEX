@@ -491,6 +491,13 @@
         ]
       },
 
+      "GPR = GuestToHost GPR:$Addr": {
+        "Desc": ["Darwin port: the host address of a guest address, Addr + guest base",
+                 "Memory operations do not add the guest base to it again, so one base serves the accesses at several offsets"
+                ],
+        "DestSize": "OpSize::i64Bit"
+      },
+
       "SpillRegister SSA:$Value, u32:$Slot, RegisterClass:$Class": {
         "HasSideEffects": true,
         "Desc": ["Spills an SSA value to memory",

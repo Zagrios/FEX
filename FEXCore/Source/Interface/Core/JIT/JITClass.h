@@ -355,7 +355,7 @@ private:
 
   [[nodiscard]]
   bool IsInlineConstant(const IR::OrderedNodeWrapper& Node, uint64_t* Value = nullptr) const;
-  // Darwin port: true when the address operand is a host address of the CPU state (FormContextAddress), which the
+  // Darwin port: true when the address operand is a host address (FormContextAddress into the CPU state, GuestToHost), which the
   // guest base offset must not be applied to (the x87 stack pass emits LoadMem/StoreMem on such addresses).
   [[nodiscard]]
   bool IsHostAddress(const IR::OrderedNodeWrapper& Node) const;
@@ -364,6 +364,11 @@ private:
   ARMEmitter::Register MemPtr(const IR::OrderedNodeWrapper& Addr, ARMEmitter::Register Tmp) {
     const auto Reg = GetReg(Addr);
     return IsHostAddress(Addr) ? Reg : GuestPtr(Reg, Tmp);
+  }
+  // Same for LoadMem, StoreMem, LoadMemTSO, StoreMemTSO, whose OffsetScale may say the address is a host one already.
+  [[nodiscard]]
+  ARMEmitter::Register MemPtr(const IR::OrderedNodeWrapper& Addr, uint8_t OffsetScale, ARMEmitter::Register Tmp) {
+    return (OffsetScale & IR::OffsetScaleHostBase) ? GetReg(Addr) : MemPtr(Addr, Tmp);
   }
   [[nodiscard]]
   bool IsInlineEntrypointOffset(const IR::OrderedNodeWrapper& WNode, uint64_t* Value) const;

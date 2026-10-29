@@ -18,6 +18,10 @@
 #include <type_traits>
 
 namespace FEXCore::IR {
+// Darwin port: bit 7 of the OffsetScale of LoadMem, StoreMem, LoadMemTSO and StoreMemTSO marks an Addr that is already a host
+// address (OpDispatchBuilder::HostBase): the backend does not add the guest base to it. It is on the memory operation, not
+// on the address value, because the register allocator replaces a spilled value by a fill that no longer says what it was.
+constexpr uint8_t OffsetScaleHostBase = 0x80;
 
 class OrderedNode;
 

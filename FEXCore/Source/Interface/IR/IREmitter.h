@@ -58,8 +58,10 @@ public:
       return Offset;
     }
 
-    // The immediate may be scaled in the IR, we need to correct for that.
-    Imm *= OffsetScale;
+    // The immediate may be scaled in the IR, we need to correct for that. Darwin port: OffsetScaleHostBase is a flag, not
+    // part of the scale, and stays on the operation.
+    const uint8_t HostBaseFlag = OffsetScale & OffsetScaleHostBase;
+    Imm *= OffsetScale & ~OffsetScaleHostBase;
 
     // Signed immediate unscaled 9-bit range for both regular and LRCPC2 ops.
     bool IsSIMM9 = ((int64_t)Imm >= -256) && ((int64_t)Imm <= 255);
@@ -72,7 +74,7 @@ public:
     IsExtended &= !TSO;
 
     if (IsSIMM9 || IsExtended) {
-      OffsetScale = 1;
+      OffsetScale = 1 | HostBaseFlag;
       return _InlineConstant(Imm);
     } else {
       return Offset;

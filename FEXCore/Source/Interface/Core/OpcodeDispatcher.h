@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 #pragma once
 
+#include <FEXCore/Utils/GuestBase.h>
 #include "Interface/Core/Frontend.h"
 #include "Interface/Core/X86Tables/X86Tables.h"
 #include "Interface/Core/Addressing.h"
@@ -146,6 +147,10 @@ public:
   }
 
   void StartNewBlock() {
+    // The host bases of the previous block's values are not visible here.
+    ForgetHostBases();
+    HostBaseBlock = CurrentCodeBlock;
+
     // If we loaded flags but didn't change them, invalidate the cached copy and move on.
     // Changes get stored out by CalculateDeferredFlags.
     CachedNZCV = nullptr;
@@ -1189,6 +1194,9 @@ public:
   }
 
   void FlushRegisterCache(bool SRAOnly = false, bool MMXOnly = false) {
+    if (!SRAOnly) {
+      ForgetHostBases();
+    }
     // At block boundaries, fix up the carry flag.
     if (!SRAOnly) {
       RectifyCarryInvert(CFInvertedABI);
@@ -2106,6 +2114,10 @@ private:
     LOGMAN_THROW_A_FMT(Index < 64, "valid index");
     LOGMAN_THROW_A_FMT(Value != InvalidNode, "storing valid");
 
+    if (Index >= GPR0Index && Index < GPR0Index + 16) {
+      HostBaseOfGPR[Index - GPR0Index] = nullptr;
+    }
+
     uint64_t Bit = (1ull << (uint64_t)Index);
 
     RegCache.Value[Index] = Value;
@@ -2537,14 +2549,93 @@ private:
     return _LoadMemAutoTSO(RegClass::FPR, Size, ssa0, Align);
   }
 
+  // Darwin port: the host address of a guest base address (GuestToHost), made once and reused, so that the accesses at
+  // several offsets from one register share one add of the guest base instead of one each. FEX reloads the static
+  // registers at every instruction (Core.cpp, FlushRegisterCache(true)), so a register read is keyed by the register:
+  // the entry holds until the register is written (StoreContext) or the cache is fully flushed (block ends, helpers,
+  // system calls). RSP is included: push and pop move an RMWHandle copy of it, then store it like any register. Other
+  // values are keyed by their SSA node.
+  Ref HostBase(Ref Base) {
+#ifdef FEX_GUEST_BASE
+    if (!Base || Base == InvalidNode) {
+      return Base;
+    }
+    const auto* Header = GetOpHeader(WrapNode(Base));
+    if (Header->Op == OP_LOADREGISTER) {
+      const auto* Load = Header->C<IROp_LoadRegister>();
+      if (Load->Class == RegClass::GPR && Load->Reg < 16 && Header->Size == OpSize::i64Bit) {
+        Ref& Cached = HostBaseOfGPR[Load->Reg];
+        if (!Cached) {
+          // At most HostBaseLive bases at once: each one is a register the allocator keeps, and more of them made it
+          // spill (measured on THE FINALS: 16 live bases saved 37 % of the adds but gave a third back in moves and spills).
+          unsigned Live = 0, Oldest = 16;
+          for (unsigned i = 0; i < 16; i++) {
+            if (HostBaseOfGPR[i]) {
+              Live++;
+              if (Oldest == 16 || HostBaseAge[i] < HostBaseAge[Oldest]) Oldest = i;
+            }
+          }
+          if (Live >= HostBaseLive && Oldest < 16) {
+            HostBaseOfGPR[Oldest] = nullptr;
+          }
+          Cached = _GuestToHost(Base);
+        }
+        HostBaseAge[Load->Reg] = ++HostBaseClock;
+        return Cached;
+      }
+    }
+    if (HostBaseBlock != CurrentCodeBlock) {
+      HostBaseBlock = CurrentCodeBlock;
+      HostBaseCount = 0;
+    }
+    for (unsigned i = 0; i < std::min(HostBaseCount, HostBaseSlots); ++i) {
+      if (HostBaseCache[i].first == Base) {
+        return HostBaseCache[i].second;
+      }
+    }
+    Ref Host = _GuestToHost(Base);
+    HostBaseCache[HostBaseCount++ % HostBaseSlots] = {Base, Host};
+    return Host;
+#else
+    return Base;
+#endif
+  }
+  void ForgetHostBases() {
+    HostBaseCount = 0;
+    HostBaseBlock = nullptr;
+    for (auto& R : HostBaseOfGPR) {
+      R = nullptr;
+    }
+  }
+  Ref HostBaseOfGPR[16] {};
+  uint32_t HostBaseAge[16] {};
+  uint32_t HostBaseClock {};
+  static constexpr unsigned HostBaseLive = 4;
+
+  // B.Base becomes its host address when there is a guest base; returns the OffsetScale for the memory operation.
+  uint8_t WithHostBase(AddressMode& B) {
+#ifdef FEX_GUEST_BASE
+    if (B.Base && B.Base != InvalidNode) {
+      B.Base = HostBase(B.Base);
+      return B.IndexScale | OffsetScaleHostBase;
+    }
+#endif
+    return B.IndexScale;
+  }
+  static constexpr unsigned HostBaseSlots = 8;
+  std::pair<Ref, Ref> HostBaseCache[HostBaseSlots] {};
+  unsigned HostBaseCount {};
+  Ref HostBaseBlock {};
+
   Ref _LoadMemAutoTSO(RegClass Class, OpSize Size, const AddressMode& A, OpSize Align = OpSize::i8Bit) {
     const bool AtomicTSO = IsTSOEnabled(Class) && !A.NonTSO;
-    const auto B = SelectAddressMode(this, A, GetGPROpSize(), CTX->HostFeatures.SupportsTSOImm9, AtomicTSO, Class != RegClass::GPR, Size);
+    auto B = SelectAddressMode(this, A, GetGPROpSize(), CTX->HostFeatures.SupportsTSOImm9, AtomicTSO, Class != RegClass::GPR, Size);
+    const uint8_t Scale = WithHostBase(B);
 
     if (AtomicTSO) {
-      return _LoadMemTSO(Class, Size, B.Base, B.Index, Align, B.IndexType, B.IndexScale);
+      return _LoadMemTSO(Class, Size, B.Base, B.Index, Align, B.IndexType, Scale);
     } else {
-      return _LoadMem(Class, Size, B.Base, B.Index, Align, B.IndexType, B.IndexScale);
+      return _LoadMem(Class, Size, B.Base, B.Index, Align, B.IndexType, Scale);
     }
   }
   Ref _LoadMemGPRAutoTSO(OpSize Size, const AddressMode& A, OpSize Align = OpSize::i8Bit) {
@@ -2602,12 +2693,13 @@ private:
 
   Ref _StoreMemAutoTSO(RegClass Class, OpSize Size, const AddressMode& A, Ref Value, OpSize Align = OpSize::i8Bit) {
     const bool AtomicTSO = IsTSOEnabled(Class) && !A.NonTSO;
-    const auto B = SelectAddressMode(this, A, GetGPROpSize(), CTX->HostFeatures.SupportsTSOImm9, AtomicTSO, Class != RegClass::GPR, Size);
+    auto B = SelectAddressMode(this, A, GetGPROpSize(), CTX->HostFeatures.SupportsTSOImm9, AtomicTSO, Class != RegClass::GPR, Size);
+    const uint8_t Scale = WithHostBase(B);
 
     if (AtomicTSO) {
-      return _StoreMemTSO(Class, Size, Value, B.Base, B.Index, Align, B.IndexType, B.IndexScale);
+      return _StoreMemTSO(Class, Size, Value, B.Base, B.Index, Align, B.IndexType, Scale);
     } else {
-      return _StoreMem(Class, Size, Value, B.Base, B.Index, Align, B.IndexType, B.IndexScale);
+      return _StoreMem(Class, Size, Value, B.Base, B.Index, Align, B.IndexType, Scale);
     }
   }
   Ref _StoreMemGPRAutoTSO(OpSize Size, const AddressMode& A, Ref Value, OpSize Align = OpSize::i8Bit) {

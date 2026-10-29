@@ -734,7 +734,8 @@ bool Arm64JITCore::IsHostAddress(const IR::OrderedNodeWrapper& WNode) const {
   if (WNode.IsImmediate() || WNode.IsInvalid()) {
     return false;
   }
-  return IR->GetOp<IR::IROp_Header>(WNode)->Op == IR::IROps::OP_FORMCONTEXTADDRESS;
+  const auto Op = IR->GetOp<IR::IROp_Header>(WNode)->Op;
+  return Op == IR::IROps::OP_FORMCONTEXTADDRESS || Op == IR::IROps::OP_GUESTTOHOST;
 }
 
 bool Arm64JITCore::IsInlineConstant(const IR::OrderedNodeWrapper& WNode, uint64_t* Value) const {

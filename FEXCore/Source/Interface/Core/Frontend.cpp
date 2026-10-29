@@ -1692,6 +1692,12 @@ void Decoder::DecodeLoop(const uint8_t* _InstStream, uint64_t GuestSizePause) {
         break;
       }
 
+      // Darwin port: in 32-bit code EIP wraps from 0xFFFFFFFF to 0, so the instruction after one that ends at 4 GiB is
+      // at 0, not at the next byte: end the block there. Its exit address is truncated to 32 bits.
+      if (!BlockInfo.Is64BitMode && (OpEndAddress >> 32)) {
+        break;
+      }
+
       PCOffset += DecodeInst->InstSize;
       InstStream += DecodeInst->InstSize;
 
@@ -1760,7 +1766,9 @@ void Decoder::SetupDecodeInstructionsAtEntry(FEXCore::Core::InternalThreadState*
   // Decode operating mode from thread's CS segment.
   const auto CSSegment = Core::CPUState::GetSegmentFromIndex(Thread->CurrentFrame->State, Thread->CurrentFrame->State.cs_idx);
   BlockInfo.Is64BitMode = CSSegment->L == 1;
-  LOGMAN_THROW_A_FMT(BlockInfo.Is64BitMode == CTX->Config.Is64BitMode, "Expected operating mode to not change at runtime!");
+  // Darwin port: a 64-bit process may run 32-bit code after a far transfer to a compatibility mode code segment, as
+  // NCGuard does to check that EIP wraps at 4 GiB. A 32-bit process never runs 64-bit code.
+  LOGMAN_THROW_A_FMT(CTX->Config.Is64BitMode || !BlockInfo.Is64BitMode, "Expected operating mode to not change at runtime!");
 
   EntryPoint = PC;
   BlockInfo.EntryPoints = {PC};

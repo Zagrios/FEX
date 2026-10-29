@@ -4053,7 +4053,8 @@ void OpDispatchBuilder::BeginFunction(uint64_t RIP, const fextl::vector<FEXCore:
                                       uint32_t NumInstructions, bool _Is64BitMode, bool MonoBackpatcherBlock) {
   Entry = RIP;
   Is64BitMode = _Is64BitMode;
-  LOGMAN_THROW_A_FMT(Is64BitMode == CTX->Config.Is64BitMode, "Expected operating mode to not change at runtime!");
+  // Darwin port: 32-bit code may run in a 64-bit process (see Decoder::SetupDecodeInstructionsAtEntry).
+  LOGMAN_THROW_A_FMT(CTX->Config.Is64BitMode || !Is64BitMode, "Expected operating mode to not change at runtime!");
   IsMonoBackpatcherBlock = MonoBackpatcherBlock;
   auto IRHeader = _IRHeader(InvalidNode, RIP, 0, NumInstructions, 0, 0);
   CreateJumpBlocks(Blocks);

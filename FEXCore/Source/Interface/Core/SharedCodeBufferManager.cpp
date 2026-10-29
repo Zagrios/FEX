@@ -13,8 +13,11 @@
 
 namespace FEXCore::CPU {
 static constexpr size_t INITIAL_CODE_SIZE = 1024 * 1024 * 16;
-// We don't want to move above 128MB atm because that means we will have to encode longer jumps
-static constexpr size_t MAX_CODE_SIZE = 1024 * 1024 * 128;
+// Darwin port: 512 MiB instead of 128 MiB. A full buffer drops every translation (ClearCodeCache): THE FINALS filled
+// 128 MiB every one to two minutes of play, and each clear retranslated its working set on the game thread. Block links
+// out of branch range go through their jump thunk (Arm64JITCore::ExitFunctionLink), and patch stubs stay in range
+// through the zones of CodeBuffer.
+static constexpr size_t MAX_CODE_SIZE = 1024 * 1024 * 512;
 
 CodeBuffer::CodeBuffer(size_t Size, bool ShouldBeNamed)
   : AllocatedSize(Size) {
@@ -44,16 +47,20 @@ CodeBuffer::CodeBuffer(size_t Size, bool ShouldBeNamed)
 
   LookupCache = fextl::make_unique<GuestToHostMap>();
 
-  CodeBufferEnd = Ptr + UsableSize();
+  CodeBufferEnd = ZoneCodeEnd(NumZones() - 1);
   CodeBufferOffset = Ptr;
   if (PatchRegionSize()) {
-    PatchRegion.Allocated(reinterpret_cast<uint64_t>(Ptr), reinterpret_cast<uint64_t>(CodeBufferEnd), PatchRegionSize());
+    for (size_t Zone = 0; Zone < NumZones(); Zone++) {
+      PatchRegion.Allocated(reinterpret_cast<uint64_t>(ZoneBegin(Zone)), reinterpret_cast<uint64_t>(ZoneCodeEnd(Zone)), PatchRegionSize());
+    }
   }
 }
 
 CodeBuffer::~CodeBuffer() {
   if (PatchRegionSize()) {
-    PatchRegion.Freed(reinterpret_cast<uint64_t>(CodeBufferEnd));
+    for (size_t Zone = 0; Zone < NumZones(); Zone++) {
+      PatchRegion.Freed(reinterpret_cast<uint64_t>(ZoneCodeEnd(Zone)));
+    }
   }
   FEXCore::Allocator::VirtualFree(Ptr, AllocatedSize);
 }

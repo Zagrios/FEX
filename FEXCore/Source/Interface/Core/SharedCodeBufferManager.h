@@ -44,38 +44,66 @@ struct CodeBuffer {
     LOGMAN_THROW_A_FMT(reinterpret_cast<uintptr_t>(CodeBufferOffset.load()) % 16 == 0, "Buffer needs to always be 16B aligned!");
 
     auto ExpectedOffset = CodeBufferOffset.load(std::memory_order_relaxed);
-    auto DesiredOffset = ExpectedOffset + Size;
-
-    if (DesiredOffset > CodeBufferEnd) {
-      // Couldn't fit.
-      return {};
-    }
-
-    while (!CodeBufferOffset.compare_exchange_strong(ExpectedOffset, DesiredOffset)) {
-      DesiredOffset = ExpectedOffset + Size;
-
-      if (DesiredOffset > CodeBufferEnd) {
-        // Couldn't fit.
+    for (;;) {
+      // An allocation never crosses the end of the code of its zone: it starts the next zone instead.
+      uint8_t* Start = ExpectedOffset;
+      const size_t Zone = static_cast<size_t>(Start - Ptr) / ZoneBytes();
+      if (Zone >= NumZones()) {
         return {};
       }
+      if (Start + Size > ZoneCodeEnd(Zone)) {
+        if (Zone + 1 >= NumZones() || ZoneBegin(Zone + 1) + Size > ZoneCodeEnd(Zone + 1)) {
+          // Couldn't fit.
+          return {};
+        }
+        Start = ZoneBegin(Zone + 1);
+      }
+      if (CodeBufferOffset.compare_exchange_strong(ExpectedOffset, Start + Size)) {
+        // Managed to fit.
+        return {
+          .BufferBase = Ptr,
+          .BufferAllocationOffset = Start,
+        };
+      }
     }
-
-    // Managed to fit.
-    return {
-      .BufferBase = Ptr,
-      .BufferAllocationOffset = ExpectedOffset,
-    };
   }
 
   // Returns the total number of bytes available for storing code
   size_t UsableSize() const {
-    return AllocatedSize - FEXCore::Utils::FEX_HOST_PAGE_SIZE - PatchRegionSize();
+    return AllocatedSize - FEXCore::Utils::FEX_HOST_PAGE_SIZE - NumZones() * PatchRegionSize();
   }
 
-  // The bytes at the end kept for patch stubs, 1/16 of the buffer, when the frontend asked for them
+  // Darwin port: with patch regions (FEXCore/Core/PatchRegion.h), a buffer larger than ZoneSize is cut into zones of
+  // ZoneSize, each ending with its own patch region, so that every instruction reaches the stubs of its zone with a
+  // branch (+-128 MiB). Without them, or up to ZoneSize, the buffer is one zone.
+  static constexpr size_t ZoneSize = 128 * 1024 * 1024;
+  size_t NumZones() const {
+    return FEXCore::CPU::PatchRegion.Allocated && AllocatedSize > ZoneSize ? AllocatedSize / ZoneSize : 1;
+  }
+  size_t ZoneBytes() const {
+    return NumZones() == 1 ? AllocatedSize : ZoneSize;
+  }
+  uint8_t* ZoneBegin(size_t Zone) const {
+    return Ptr + Zone * ZoneBytes();
+  }
+  // The end of the code of a zone: its patch region starts there (and the guard page follows the last one).
+  uint8_t* ZoneCodeEnd(size_t Zone) const {
+    return ZoneBegin(Zone) + ZoneBytes() - PatchRegionSize() - (Zone + 1 == NumZones() ? FEXCore::Utils::FEX_HOST_PAGE_SIZE : 0);
+  }
+  // Whether Address is in translated code: in a zone, outside its patch region.
+  bool ContainsCode(uintptr_t Address) const {
+    const auto Base = reinterpret_cast<uintptr_t>(Ptr);
+    if (Address < Base || Address >= Base + AllocatedSize) {
+      return false;
+    }
+    const size_t Zone = (Address - Base) / ZoneBytes();
+    return Zone < NumZones() && Address < reinterpret_cast<uintptr_t>(ZoneCodeEnd(Zone));
+  }
+
+  // The bytes at the end of each zone kept for patch stubs, 1/16 of the zone, when the frontend asked for them
   // (FEXCore/Core/PatchRegion.h).
   size_t PatchRegionSize() const {
-    return FEXCore::CPU::PatchRegion.Allocated ? FEXCore::AlignDown(AllocatedSize / 16, FEXCore::Utils::FEX_HOST_PAGE_SIZE) : 0;
+    return FEXCore::CPU::PatchRegion.Allocated ? FEXCore::AlignDown(ZoneBytes() / 16, FEXCore::Utils::FEX_HOST_PAGE_SIZE) : 0;
   }
 
   // Returns the full size of the buffer, including the guard page.

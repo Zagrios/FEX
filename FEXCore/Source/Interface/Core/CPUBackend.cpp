@@ -340,9 +340,7 @@ namespace CPU {
 
   bool CPUBackend::IsAddressInCodeBuffer(uintptr_t Address) const {
     const auto CheckCodeBuffer = [](const CodeBuffer& Buffer, uintptr_t Address) {
-      const auto BufferPtr = reinterpret_cast<uintptr_t>(Buffer.GetBufferBase());
-      const uintptr_t LastPageAddr = BufferPtr + Buffer.UsableSize();
-      return (Address >= BufferPtr && Address < LastPageAddr);
+      return Buffer.ContainsCode(Address);
     };
 
     if (CheckCodeBuffer(*CurrentCodeBuffer, Address)) {

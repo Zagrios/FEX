@@ -5337,11 +5337,13 @@ void OpDispatchBuilder::PermissionRestrictedOp(OpcodeArgs) {
 }
 
 void OpDispatchBuilder::InvalidOp(OpcodeArgs) {
+  // Darwin port: #UD, as Linux reports it (trap 6, ILL_ILLOPN). Trap 0 made Wine log "Got unexpected trap 0" for every
+  // VMCALL or VMMCALL NCGuard probes with.
   BreakOp(Op, FEXCore::IR::BreakDefinition {
                 .ErrorRegister = 0,
                 .Signal = SIGILL,
-                .TrapNumber = 0,
-                .si_code = 0,
+                .TrapNumber = X86State::X86_TRAPNO_UD,
+                .si_code = 2, ///< ILL_ILLOPN
               });
 }
 

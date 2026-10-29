@@ -748,7 +748,15 @@ ContextImpl::GenerateIR(FEXCore::Core::InternalThreadState* Thread, uint64_t Gue
           Thread->OpDispatcher->SetForceTSO(ForceTSO);
           std::invoke(Fn, Thread->OpDispatcher, DecodedInfo);
           if (Thread->OpDispatcher->HadDecodeFailure()) {
-            HadDispatchError = true;
+            if (!BlockInstructionsLength) {
+              // Darwin port: the guest reached an instruction the dispatcher cannot translate: raise #UD on it, as for
+              // an unimplemented one. Without code for the block, CompileBlock returned 0 and the caller, the
+              // dispatcher or ExitFunctionLink, jumped to host address 0, which ended the process.
+              Thread->OpDispatcher->UnimplementedOp(DecodedInfo);
+              HadInvalidInst = true;
+            } else {
+              HadDispatchError = true;
+            }
           } else {
             if (Thread->OpDispatcher->HasHandledLock() != IsLocked) {
               HadDispatchError = true;

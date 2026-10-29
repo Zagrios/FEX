@@ -237,6 +237,10 @@ public:
     // Keeping track not L1 misses, but specifically L2/L3 hits.
     ++L2L3CacheHits;
 
+    // Darwin port: the clock is read once every 1024 hits, not on each one (about 4 % of compile time in THE FINALS).
+    if ((L2L3CacheHits & 1023) != 0) {
+      return;
+    }
     const auto CurrentTime = std::chrono::system_clock::now();
     const auto Period = CurrentTime - LastPeriod;
     if (Period >= SamplePeriod) {
@@ -308,6 +312,20 @@ public:
     CacheBlockMapping(Address, Entry, true, lk);
   }
 
+  // Darwin port: every entry point of one compilation under one acquisition of the write lock.
+  void AddBlockMappings(FEXCore::Core::InternalThreadState* Thread, std::span<const std::pair<uint64_t, void*>> Entries,
+                        std::span<const uint64_t> CodePages) {
+    std::optional<FEXCore::SHMStats::AccumulationBlock<uint64_t>> LockTime(
+      Thread->ThreadStats ? &Thread->ThreadStats->AccumulatedCacheWriteLockTime : nullptr);
+    auto lk = Shared->AcquireWriteLock();
+    LockTime.reset();
+
+    for (const auto& [Address, HostCode] : Entries) {
+      const auto& Entry = Shared->AddBlockMapping(Address, CodePages, HostCode, lk);
+      CacheBlockMapping(Address, Entry, true, lk);
+    }
+  }
+
   // Invalidates L1/L2 for a given guest block
   void InvalidateCache(uint64_t Address, const LookupCacheWriteLockToken& lk) {
     // Do L1
@@ -343,16 +361,33 @@ public:
   bool InvalidateCacheRange(uint64_t Start, uint64_t Length) {
     auto lk = Shared->AcquireWriteLock();
 
-    auto lower = CachedCodePages.lower_bound(Start >> 12);
-    auto upper = CachedCodePages.upper_bound((Start + Length - 1) >> 12);
-
-    for (auto it = lower; it != upper; it++) {
-      for (const auto& Entry : it->second) {
+    // Darwin port: CachedCodePages is a hash map (an ordered map cost a node allocation and a tree walk on every block
+    // mapping, about a fifth of THE FINALS's compile time). Small ranges visit their pages, large ones the map.
+    const uint64_t First = Start >> 12, Last = (Start + Length - 1) >> 12;
+    bool ret = false;
+    const auto Drop = [&](auto It) {
+      for (const auto& Entry : It->second) {
         InvalidateCache(Entry, lk);
       }
+      ret = true;
+    };
+    if (Last - First < CachedCodePages.size()) {
+      for (uint64_t Page = First; Page <= Last; Page++) {
+        if (auto It = CachedCodePages.find(Page); It != CachedCodePages.end()) {
+          Drop(It);
+          CachedCodePages.erase(It);
+        }
+      }
+    } else {
+      for (auto It = CachedCodePages.begin(); It != CachedCodePages.end();) {
+        if (It->first >= First && It->first <= Last) {
+          Drop(It);
+          It = CachedCodePages.erase(It);
+        } else {
+          ++It;
+        }
+      }
     }
-    bool ret = upper != lower;
-    CachedCodePages.erase(lower, upper);
     return ret;
   }
 
@@ -456,7 +491,7 @@ private:
   }
 
   // Maps from a page index to all blocks in the page that have at some point been fetched into L1/L2
-  fextl::map<uint64_t, fextl::robin_set<uint64_t>> CachedCodePages;
+  fextl::robin_map<uint64_t, fextl::robin_set<uint64_t>> CachedCodePages;
 
   uintptr_t PagePointer;
   uintptr_t PageMemory;

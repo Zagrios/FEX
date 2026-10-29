@@ -1077,8 +1077,13 @@ uintptr_t ContextImpl::CompileBlock(FEXCore::Core::CpuStateFrame* Frame, uint64_
   }
 
   // Insert to lookup cache
-  for (auto [GuestAddr, HostAddr] : CompiledCode.EntryPoints) {
-    Thread->LookupCache->AddBlockMapping(Thread, GuestAddr, CodePages, HostAddr);
+  {
+    fextl::vector<std::pair<uint64_t, void*>> Entries;
+    Entries.reserve(CompiledCode.EntryPoints.size());
+    for (auto [GuestAddr, HostAddr] : CompiledCode.EntryPoints) {
+      Entries.emplace_back(GuestAddr, HostAddr);
+    }
+    Thread->LookupCache->AddBlockMappings(Thread, Entries, CodePages);
   }
 
   // Clear any relocations that might have been generated

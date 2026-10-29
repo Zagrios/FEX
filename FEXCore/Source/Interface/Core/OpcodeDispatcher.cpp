@@ -137,14 +137,11 @@ RSP
 SS
 */
 void OpDispatchBuilder::IRETOp(OpcodeArgs) {
-  // Operand Size override unsupported!
-  if ((Op->Flags & X86Tables::DecodeFlags::FLAG_OPERAND_SIZE) != 0) {
-    LogMan::Msg::EFmt("IRET only implemented for 64bit and 32bit sizes");
-    DecodeFailure = true;
-    return;
-  }
-
-  const auto GPRSize = GetGPROpSize();
+  // Darwin port: the operand size is 16 bits with 0x66 and 64 bits only with REX.W, as on x86: IRET in 64-bit mode
+  // pops 4-byte values, and IRETW, which NCGuard runs, 2-byte ones. Each value is zero-extended.
+  const auto GPRSize = (Op->Flags & X86Tables::DecodeFlags::FLAG_OPERAND_SIZE)   ? OpSize::i16Bit :
+                       (Op->Flags & X86Tables::DecodeFlags::FLAG_REX_WIDENING) ? OpSize::i64Bit :
+                                                                                   OpSize::i32Bit;
 
   if (Is64BitMode) {
     // IRET with NT set is a return to the previous task, which long mode does not have: #GP(0) before any pop.

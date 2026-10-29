@@ -1306,6 +1306,14 @@ void OpDispatchBuilder::MOVSegOp(OpcodeArgs, bool ToSeg) {
     case FEXCore::X86State::REG_R10: // SS
       _StoreContextGPR(OpSize::i16Bit, Src, offsetof(FEXCore::Core::CPUState, ss_idx));
       UpdatePrefixFromSegment(Src, FEXCore::X86Tables::DecodeFlags::FLAG_SS_PREFIX);
+      {
+        // Darwin port: MOV SS holds debug traps back until after the next instruction, so a single step taken over it
+        // traps after the instruction that follows. NCGuard checks this with MOV SS then CPUID. Clearing the unblocked
+        // bit of the packed TF blocks the trap for one more instruction (see Arm64JITCore::EmitTFCheck).
+        const auto TFOffset = ARRAY_OFFSETOF(FEXCore::Core::CPUState, flags, FEXCore::X86State::RFLAG_TF_RAW_LOC);
+        auto PackedTF = _LoadContextGPR(OpSize::i8Bit, TFOffset);
+        _StoreContextGPR(OpSize::i8Bit, _And(OpSize::i32Bit, PackedTF, Constant(~2)), TFOffset);
+      }
       break;
     case FEXCore::X86State::REG_RBP: // GS
     case FEXCore::X86State::REG_R13: // GS

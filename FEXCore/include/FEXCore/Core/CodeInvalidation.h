@@ -17,8 +17,6 @@ struct CodeInvalidationLog {
   };
   std::atomic<uint64_t> Requests {0};
   Entry Ring[RingSize];
-  // Statistics: compiled units recorded, not recorded because an invalidation may have touched their bytes, revived.
-  std::atomic<uint64_t> UnitsRecorded {0}, UnitsSkipped {0}, UnitsRevived {0};
 
   void Note(uint64_t Start, uint64_t Length) {
     const uint64_t N = Requests.fetch_add(1, std::memory_order_acq_rel);

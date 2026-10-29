@@ -1005,7 +1005,6 @@ uintptr_t ContextImpl::CompileBlock(FEXCore::Core::CpuStateFrame* Frame, uint64_
       }
       Thread->LookupCache->AddBlockMappings(Thread, Entries, Dead->CodePages);
       if (HostCode) {
-        CodeInvalidations.UnitsRevived.fetch_add(1, std::memory_order_relaxed);
         return HostCode;
       }
     }
@@ -1181,7 +1180,6 @@ uintptr_t ContextImpl::CompileBlock(FEXCore::Core::CpuStateFrame* Frame, uint64_
       Touched = CodeInvalidations.MayHaveTouched(InvalidationsBefore, Unit.CodePages[i] & ~(FEXCore::Utils::FEX_HOST_PAGE_SIZE - 1),
                                                  (Unit.CodePages[i] | (FEXCore::Utils::FEX_HOST_PAGE_SIZE - 1)) + 1);
     }
-    (Touched ? CodeInvalidations.UnitsSkipped : CodeInvalidations.UnitsRecorded).fetch_add(1, std::memory_order_relaxed);
     if (!Touched) {
       auto lk = Thread->LookupCache->AcquireWriteLock();
       Thread->LookupCache->Shared->Units.insert_or_assign(GuestRIP, std::move(Unit));

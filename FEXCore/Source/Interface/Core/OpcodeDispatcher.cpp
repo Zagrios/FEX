@@ -3260,13 +3260,16 @@ void OpDispatchBuilder::DECOp(OpcodeArgs) {
 }
 
 void OpDispatchBuilder::STOSOp(OpcodeArgs) {
-  if (Op->Flags & FEXCore::X86Tables::DecodeFlags::FLAG_ADDRESS_SIZE) {
-    LogMan::Msg::EFmt("STOSOp: Can't handle address size override (OP: 0x{:04X}, Flags: 0x{:08X})", Op->OP, Op->Flags);
+  if (!Is64BitMode && (Op->Flags & FEXCore::X86Tables::DecodeFlags::FLAG_ADDRESS_SIZE)) {
+    LogMan::Msg::EFmt("STOSOp: Address size override (0x67) not supported in 32-bit mode (OP: 0x{:04X}).", Op->OP);
     DecodeFailure = true;
     return;
   }
 
   const auto Size = OpSizeFromSrc(Op);
+  // Darwin port: with 0x67 in 64-bit mode, EDI and ECX instead of RDI and RCX, written back zero-extended, as in LODS.
+  // NCGuard runs these.
+  const auto AddrSize = GetStringOpSize(Op);
   const bool Repeat = (Op->Flags & (FEXCore::X86Tables::DecodeFlags::FLAG_REP_PREFIX | FEXCore::X86Tables::DecodeFlags::FLAG_REPNE_PREFIX)) != 0;
 
   if (!Repeat) {
@@ -3274,7 +3277,8 @@ void OpDispatchBuilder::STOSOp(OpcodeArgs) {
     Ref Src = LoadGPRRegister(X86State::REG_RAX, Size, 0, true);
 
     // Only ES prefix
-    Ref Dest = MakeSegmentAddress(X86State::REG_RDI, 0, X86Tables::DecodeFlags::FLAG_ES_PREFIX, true);
+    Ref Src_RDI = LoadGPRRegister(X86State::REG_RDI, AddrSize);
+    Ref Dest = AppendSegmentOffset(Src_RDI, 0, X86Tables::DecodeFlags::FLAG_ES_PREFIX, true);
 
     // Store to memory where RDI points
     if (CTX->IsMemcpyAtomicTSOEnabled()) {
@@ -3284,28 +3288,28 @@ void OpDispatchBuilder::STOSOp(OpcodeArgs) {
     }
 
     // Offset the pointer
-    Ref TailDest = LoadGPRRegister(X86State::REG_RDI);
-    StoreGPRRegister(X86State::REG_RDI, OffsetByDir(TailDest, IR::OpSizeToSize(Size)));
+    StoreGPRResultWithZExtSemantics(X86State::REG_RDI, OffsetByDir(Src_RDI, IR::OpSizeToSize(Size)), AddrSize);
   } else {
     // FEX doesn't support partial faulting REP instructions.
     // Converting this to a `MemSet` IR op optimizes this quite significantly in our codegen.
     // If FEX is to gain support for faulting REP instructions, then this implementation needs to change significantly.
     Ref Src = LoadGPRRegister(X86State::REG_RAX, Size);
-    Ref Dest = LoadGPRRegister(X86State::REG_RDI);
+    Ref Dest = LoadGPRRegister(X86State::REG_RDI, AddrSize);
 
     // Only ES prefix
     auto Segment = GetSegment(0, FEXCore::X86Tables::DecodeFlags::FLAG_ES_PREFIX, true);
 
-    Ref Counter = LoadGPRRegister(X86State::REG_RCX);
+    Ref Counter = LoadGPRRegister(X86State::REG_RCX, AddrSize);
 
     auto Result = _MemSet(CTX->IsAtomicTSOEnabled(), Size, Segment ?: InvalidNode, Dest, Src, Counter, LoadDir(1));
     StoreGPRRegister(X86State::REG_RCX, Constant(0));
-    StoreGPRRegister(X86State::REG_RDI, Result);
+    StoreGPRResultWithZExtSemantics(X86State::REG_RDI, Result, AddrSize);
   }
 }
 
 void OpDispatchBuilder::MOVSOp(OpcodeArgs) {
-  if (Op->Flags & FEXCore::X86Tables::DecodeFlags::FLAG_ADDRESS_SIZE) {
+  const bool Repeat = Op->Flags & (FEXCore::X86Tables::DecodeFlags::FLAG_REP_PREFIX | FEXCore::X86Tables::DecodeFlags::FLAG_REPNE_PREFIX);
+  if ((!Is64BitMode || Repeat) && (Op->Flags & FEXCore::X86Tables::DecodeFlags::FLAG_ADDRESS_SIZE)) {
     LogMan::Msg::EFmt("MOVSOp: Can't handle address size override (OP: 0x{:04X}, Flags: 0x{:08X})", Op->OP, Op->Flags);
     DecodeFailure = true;
     return;
@@ -3313,8 +3317,10 @@ void OpDispatchBuilder::MOVSOp(OpcodeArgs) {
 
   // RA now can handle these to be here, to avoid DF accesses
   const auto Size = OpSizeFromSrc(Op);
+  // Darwin port: without REP, 0x67 in 64-bit mode means ESI and EDI, written back zero-extended (see STOS).
+  const auto AddrSize = GetStringOpSize(Op);
 
-  if (Op->Flags & (FEXCore::X86Tables::DecodeFlags::FLAG_REP_PREFIX | FEXCore::X86Tables::DecodeFlags::FLAG_REPNE_PREFIX)) {
+  if (Repeat) {
     auto SrcAddr = LoadGPRRegister(X86State::REG_RSI);
     auto DstAddr = LoadGPRRegister(X86State::REG_RDI);
     auto Counter = LoadGPRRegister(X86State::REG_RCX);
@@ -3346,8 +3352,8 @@ void OpDispatchBuilder::MOVSOp(OpcodeArgs) {
     StoreGPRRegister(X86State::REG_RDI, Result_Dst);
     StoreGPRRegister(X86State::REG_RSI, Result_Src);
   } else {
-    Ref RSI = MakeSegmentAddress(X86State::REG_RSI, Op->Flags, X86Tables::DecodeFlags::FLAG_DS_PREFIX);
-    Ref RDI = MakeSegmentAddress(X86State::REG_RDI, 0, X86Tables::DecodeFlags::FLAG_ES_PREFIX, true);
+    Ref RSI = AppendSegmentOffset(LoadGPRRegister(X86State::REG_RSI, AddrSize), Op->Flags, X86Tables::DecodeFlags::FLAG_DS_PREFIX);
+    Ref RDI = AppendSegmentOffset(LoadGPRRegister(X86State::REG_RDI, AddrSize), 0, X86Tables::DecodeFlags::FLAG_ES_PREFIX, true);
 
     if (CTX->IsMemcpyAtomicTSOEnabled()) {
       auto Src = _LoadMemGPRAutoTSO(Size, RSI, Size);
@@ -3362,8 +3368,8 @@ void OpDispatchBuilder::MOVSOp(OpcodeArgs) {
     RSI = OffsetByDir(RSI, IR::OpSizeToSize(Size));
     RDI = OffsetByDir(RDI, IR::OpSizeToSize(Size));
 
-    StoreGPRRegister(X86State::REG_RSI, RSI);
-    StoreGPRRegister(X86State::REG_RDI, RDI);
+    StoreGPRResultWithZExtSemantics(X86State::REG_RSI, RSI, AddrSize);
+    StoreGPRResultWithZExtSemantics(X86State::REG_RDI, RDI, AddrSize);
   }
 }
 

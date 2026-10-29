@@ -46,6 +46,12 @@ public:
   virtual ExecutableRangeInfo QueryGuestExecutableRange(FEXCore::Core::InternalThreadState* Thread, uint64_t Address) = 0;
   virtual std::optional<ExecutableFileSectionInfo> LookupExecutableFileSection(Core::InternalThreadState* Thread, uint64_t GuestAddr) = 0;
 
+  // Darwin port: whether the guest bytes of [Start, Start + Length) can be read without opening a guarded host page
+  // (ReviveTranslations hashes them only then).
+  virtual bool CanReadGuestCode(uint64_t Start, uint64_t Length) {
+    return true;
+  }
+
   virtual void PreCompile() {}
   // After every block compilation (the decoder has read the guest's code), on every path out of it.
   virtual void PostCompile() {}

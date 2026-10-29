@@ -10,6 +10,15 @@
           "Can cause long JIT compilation times and stutter"
         ]
       },
+      "ReviveTranslations": {
+        "Type": "bool",
+        "Default": "true",
+        "AffectsCodeGen": "false",
+        "Desc": [
+          "Darwin port: reuse a translation an invalidation dropped when its guest bytes come back unchanged",
+          "(code a packer re-encrypts and decrypts, protection changes on unchanged code)"
+        ]
+      },
       "MaxInst": {
         "Type": "int32",
         "Default": "5000",

@@ -91,6 +91,22 @@ struct GuestToHostMap {
 
   fextl::map<uint64_t, fextl::vector<uint64_t>> CodePages;
 
+  // Darwin port: every compiled unit of this code buffer, by the RIP it was compiled for. An invalidation drops the
+  // unit's mappings but its host code stays in the buffer, intact: the links into it are severed, and the links out of
+  // it are undone when their destinations go. ContextImpl::CompileBlock maps such a unit again when the guest bytes it
+  // was translated from come back unchanged, instead of translating them again (THE FINALS's packer re-encrypts its
+  // code when the player is idle and decrypts it on the next use; each round used to retranslate the working set).
+  struct CompiledUnit {
+    fextl::vector<std::pair<uint64_t, uint64_t>> Entries; // guest RIP, host code
+    fextl::vector<uint64_t> CodePages;
+    fextl::vector<std::pair<uint64_t, uint64_t>> Ranges;  // guest bytes decoded: start, size
+    uint64_t Hash;
+    uint64_t MaxInst;
+    bool TF;
+    bool Validated; // compiled with per-instruction byte checks (SyscallHandler::NeedsCodeValidation)
+  };
+  fextl::robin_map<uint64_t, CompiledUnit> Units;
+
   GuestToHostMap();
 
   // Adds to Guest -> Host code mapping

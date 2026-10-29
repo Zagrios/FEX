@@ -36,6 +36,7 @@ $end_info$
 #include "Utils/variable_length_integer.h"
 
 #include <FEXCore/Config/Config.h>
+#include <FEXCore/Core/CodeInvalidation.h>
 #include <FEXCore/Core/Context.h>
 #include <FEXCore/Core/CoreState.h>
 #include <FEXCore/Core/SignalDelegator.h>
@@ -916,6 +917,25 @@ struct PostCompileGuard {
 };
 } // namespace
 
+// Darwin port: ReviveTranslations (GuestToHostMap::CompiledUnit in LookupCache.h).
+static bool UnitNeedsValidation(FEXCore::HLE::SyscallHandler* Handler, const fextl::vector<uint64_t>& CodePages) {
+  for (auto Page : CodePages) {
+    if (Handler->NeedsCodeValidation(Page, FEXCore::Utils::FEX_PAGE_SIZE)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+static uint64_t HashGuestRanges(const fextl::vector<std::pair<uint64_t, uint64_t>>& Ranges) {
+  // Chained: each range is hashed with the hash of the ranges before it as the seed.
+  uint64_t Hash = 0;
+  for (const auto& [Start, Size] : Ranges) {
+    Hash = XXH3_64bits_withSeed(FEXCore::G2H(Start), Size, Hash);
+  }
+  return Hash;
+}
+
 uintptr_t ContextImpl::CompileBlock(FEXCore::Core::CpuStateFrame* Frame, uint64_t GuestRIP, uint64_t MaxInst) {
   if constexpr (BLOCK_DEBUGGING) {
     // Block debugging logic is hand-written and needs to be handled with care.
@@ -943,6 +963,55 @@ uintptr_t ContextImpl::CompileBlock(FEXCore::Core::CpuStateFrame* Frame, uint64_
   if (auto HostCode = Thread->LookupCache->FindBlock(Thread, GuestRIP)) {
     return HostCode;
   }
+
+  const bool TFSet = Thread->CurrentFrame->State.flags[X86State::RFLAG_TF_RAW_LOC];
+  if (Config.ReviveTranslations) {
+    // A unit an invalidation dropped, whose guest bytes are back unchanged (and still executable): map it again.
+    std::optional<GuestToHostMap::CompiledUnit> Dead;
+    {
+      auto lk = Thread->LookupCache->AcquireWriteLock();
+      auto& Units = Thread->LookupCache->Shared->Units;
+      if (auto It = Units.find(GuestRIP); It != Units.end() && It->second.MaxInst == MaxInst && It->second.TF == TFSet) {
+        Dead = It->second;
+      }
+    }
+    // A translation made without byte checks must not come back to a page that left write tracking: no write fault
+    // would drop it any more (and the reverse would only cost time, but is refused alike).
+    bool Executable = Dead.has_value() && UnitNeedsValidation(SyscallHandler, Dead->CodePages) == Dead->Validated;
+    // Executable, and readable without opening a guarded host page: opening one lets other threads read its 4 KiB pages
+    // that the guest forbids (THEIA's encrypted code) without the fault the packer waits for.
+    for (size_t i = 0; Executable && i < Dead->CodePages.size(); i++) {
+      Executable = SyscallHandler->QueryGuestExecutableRange(Thread, Dead->CodePages[i]).Size != 0 &&
+                   SyscallHandler->CanReadGuestCode(Dead->CodePages[i], FEXCore::Utils::FEX_PAGE_SIZE);
+    }
+    if (Executable && HashGuestRanges(Dead->Ranges) == Dead->Hash) {
+      for (auto CodePage : Dead->CodePages) {
+        fextl::set<uint64_t> Entries;
+        for (const auto& [Guest, Host] : Dead->Entries) {
+          Entries.insert(Guest);
+        }
+        if (Thread->LookupCache->AddBlockExecutableRange(Thread, Entries, CodePage, FEXCore::Utils::FEX_PAGE_SIZE)) {
+          SyscallHandler->MarkGuestExecutableRange(Thread, CodePage, FEXCore::Utils::FEX_PAGE_SIZE);
+        }
+      }
+      uintptr_t HostCode = 0;
+      fextl::vector<std::pair<uint64_t, void*>> Entries;
+      Entries.reserve(Dead->Entries.size());
+      for (const auto& [Guest, Host] : Dead->Entries) {
+        Entries.emplace_back(Guest, reinterpret_cast<void*>(Host));
+        if (Guest == GuestRIP) {
+          HostCode = Host;
+        }
+      }
+      Thread->LookupCache->AddBlockMappings(Thread, Entries, Dead->CodePages);
+      if (HostCode) {
+        CodeInvalidations.UnitsRevived.fetch_add(1, std::memory_order_relaxed);
+        return HostCode;
+      }
+    }
+  }
+  // Invalidations asked for from here on may have changed the bytes this compilation decodes.
+  const uint64_t InvalidationsBefore = CodeInvalidations.Requests.load(std::memory_order_acquire);
 
   Thread->FrontendDecoder->SetupDecodeInstructionsAtEntry(Thread, GuestRIP, MaxInst);
 
@@ -1086,6 +1155,39 @@ uintptr_t ContextImpl::CompileBlock(FEXCore::Core::CpuStateFrame* Frame, uint64_
     Thread->LookupCache->AddBlockMappings(Thread, Entries, CodePages);
   }
 
+  if (Config.ReviveTranslations && NeedsAddGuestCodeRanges) {
+    auto BlockInfo = Thread->FrontendDecoder->GetDecodedBlockInfo();
+    GuestToHostMap::CompiledUnit Unit {
+      .CodePages = CodePages, .Hash = 0, .MaxInst = MaxInst, .TF = TFSet, .Validated = UnitNeedsValidation(SyscallHandler, CodePages)};
+    for (auto [GuestAddr, HostAddr] : CompiledCode.EntryPoints) {
+      Unit.Entries.emplace_back(GuestAddr, reinterpret_cast<uint64_t>(HostAddr));
+    }
+    // A block that raises a fetch fault or SIGILL (an instruction in a page that was not executable, a partial decode,
+    // an invalid instruction) depends on more than its bytes: once the page is executable the same bytes must give a
+    // translation that runs. Such units are never kept, or a revived one would fault forever (THEIA decrypts on the
+    // fault and continues at the same instruction).
+    bool Faulting = false;
+    for (const auto& Block : BlockInfo->Blocks) {
+      Faulting |= Block.BlockStatus != Frontend::Decoder::DecodedBlockStatus::SUCCESS;
+      if (Block.Size) {
+        Unit.Ranges.emplace_back(Block.Entry, Block.Size);
+      }
+    }
+    Unit.Hash = HashGuestRanges(Unit.Ranges);
+    // Kept only if no invalidation of its pages was asked for since before the decoder ran: the bytes hashed are the
+    // ones decoded.
+    bool Touched = Faulting || Unit.Ranges.empty();
+    for (size_t i = 0; !Touched && i < Unit.CodePages.size(); i++) {
+      Touched = CodeInvalidations.MayHaveTouched(InvalidationsBefore, Unit.CodePages[i] & ~(FEXCore::Utils::FEX_HOST_PAGE_SIZE - 1),
+                                                 (Unit.CodePages[i] | (FEXCore::Utils::FEX_HOST_PAGE_SIZE - 1)) + 1);
+    }
+    (Touched ? CodeInvalidations.UnitsSkipped : CodeInvalidations.UnitsRecorded).fetch_add(1, std::memory_order_relaxed);
+    if (!Touched) {
+      auto lk = Thread->LookupCache->AcquireWriteLock();
+      Thread->LookupCache->Shared->Units.insert_or_assign(GuestRIP, std::move(Unit));
+    }
+  }
+
   // Clear any relocations that might have been generated
   if (!CodeCache.IsGeneratingCache) {
     Thread->CPUBackend->ClearRelocations();
@@ -1122,6 +1224,7 @@ uintptr_t ContextImpl::CompileSingleStep(FEXCore::Core::CpuStateFrame* Frame, ui
 
 void ContextImpl::InvalidateCodeBuffersCodeRange(uint64_t Start, uint64_t Length) {
   FEXCORE_PROFILE_SCOPED("InvalidateCodeBuffersCodeRange");
+  CodeInvalidations.Note(Start, Length);
 
   LOGMAN_THROW_A_FMT(CodeInvalidationMutex.try_lock() == false, "CodeInvalidationMutex needs to be unique_locked here");
   std::scoped_lock lk {CodeBufferListLock};

@@ -1276,6 +1276,9 @@ void OpDispatchBuilder::MOVSegOp(OpcodeArgs, bool ToSeg) {
         Valid = _Or(OpSize::i32Bit, Null, LinuxUserSegment(Src).Valid);
       }
       RaiseGPUnless(Op, Valid, CondClass::NEQ);
+      // RaiseGPUnless starts new IR blocks and no value lives across blocks: load the selector again, or the load stores
+      // whatever the check left in its register (1 for a valid selector, so MOV SS, AX loaded SS with 1).
+      Src = LoadSourceGPR_WithOpSize(Op, Op->Src[0], OpSize::i16Bit, Op->Flags);
     }
 
     switch (Op->Dest.Data.GPR.GPR) {

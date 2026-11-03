@@ -128,9 +128,26 @@ uint8_t Decoder::ReadByte() {
   return *Byte;
 }
 
+// Darwin port: where the byte of guest code at Address is read without a fault, nullptr for the guest's own memory.
+const uint8_t* Decoder::GuardedByte(uint64_t Address) {
+  const uint64_t Page = Address & FEXCore::Utils::FEX_HOST_PAGE_MASK;
+  if (Page != GuardPage) {
+    GuardPage = Page;
+    GuardActive = CTX->SyscallHandler->GuardedCodeViews(Page, GuardViews);
+  }
+  if (!GuardActive) {
+    return nullptr;
+  }
+  const uint8_t* View = GuardViews[(Address - Page) >> 12];
+  return View ? View + (Address & 0xfff) : nullptr;
+}
+
 std::optional<uint8_t> Decoder::PeekByte(uint8_t Offset) {
   uint64_t ByteAddress = reinterpret_cast<uint64_t>(InstStream.InstStream + InstructionSize + Offset);
   if (CheckRangeExecutable(ByteAddress, 1)) {
+    if (const uint8_t* Guarded = GuardedByte(ByteAddress)) {
+      return *Guarded;
+    }
     return InstStream.AdjustedInstStream[InstructionSize + Offset];
   } else {
     return std::nullopt;
@@ -145,7 +162,12 @@ std::pair<uint64_t, bool> Decoder::ReadData(uint8_t Size) {
   LastFieldReadOffset = (uint8_t)InstructionSize;
   LastFieldReadSize = Size;
   if (CheckRangeExecutable(Address, Size)) {
-    std::memcpy(&Res, &InstStream.AdjustedInstStream[InstructionSize], Size);
+    // Byte by byte: the field may straddle two 4 KiB pieces, only one of which has a view.
+    auto* ResBytes = reinterpret_cast<uint8_t*>(&Res);
+    for (uint8_t i = 0; i < Size; ++i) {
+      const uint8_t* Guarded = GuardedByte(Address + i);
+      ResBytes[i] = Guarded ? *Guarded : InstStream.AdjustedInstStream[InstructionSize + i];
+    }
   } else {
     HitNonExecutableRange = true;
     // See PeekByte, this specific case may cause some executable memory to read as 0 but it doesn't matter as the entire instruction will be rolled back anyway.
@@ -1751,6 +1773,7 @@ void Decoder::SetupDecodeInstructionsAtEntry(FEXCore::Core::InternalThreadState*
   BlockInfo.TotalInstructionCount = 0;
   BlockInfo.Blocks.clear();
   VisitedBlocks.clear();
+  GuardPage = ~0ULL; // the guest's mappings may have changed since the last decode
   // Reset internal state management
   Paused = false;
   BlockResume = -1;

@@ -65,6 +65,9 @@ public:
 
   void SetupDecodeInstructionsAtEntry(FEXCore::Core::InternalThreadState* Thread, uint64_t PC, uint64_t MaxInst);
   void DecodeLoop(const uint8_t* InstStream, uint64_t GuestPause = 0);
+  // Darwin port: where the byte of guest code at Address is read without opening a guarded host page, nullptr for the
+  // guest's own memory (SyscallHandler::GuardedCodeViews).
+  const uint8_t* GuardedByte(uint64_t Address);
 
   const DecodedBlockInformation* GetDecodedBlockInfo() const {
     return &BlockInfo;
@@ -160,6 +163,12 @@ private:
   bool ExecutableRangeWritable {};
   bool HitNonExecutableRange {};
   bool HitBadRelocation {};
+
+  // Darwin port: the host page the decoder last read (SyscallHandler::GuardedCodeViews) and, when it is a guarded one,
+  // the views it reads its 4 KiB pieces through.
+  uint64_t GuardPage {~0ULL};
+  bool GuardActive {};
+  const uint8_t* GuardViews[4] {};
 
   struct DecodeStream {
     // Original instruction stream RIP location.

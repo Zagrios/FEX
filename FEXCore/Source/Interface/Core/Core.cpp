@@ -702,7 +702,14 @@ ContextImpl::GenerateIR(FEXCore::Core::InternalThreadState* Thread, uint64_t Gue
           auto InstAddressReg = Thread->OpDispatcher->_EntrypointOffset(GPRSize, InstAddress - GuestRIP);
 
           // The CRC is computed on the host copy of the guest code (ValidateCode adds the guest base in the JIT too).
-          auto Value = FEXCore::Utils::crc32(static_cast<const uint8_t*>(FEXCore::G2H(Block.Entry + BlockInstructionsLength)), DecodedInfo->InstSize);
+          // Darwin port: through the decoder's views of a guarded host page, as the decoder read these bytes.
+          uint8_t InstBytes[16];
+          for (uint64_t i = 0; i < DecodedInfo->InstSize && i < sizeof(InstBytes); ++i) {
+            const uint64_t ByteAddress = Block.Entry + BlockInstructionsLength + i;
+            const uint8_t* Guarded = Thread->FrontendDecoder->GuardedByte(ByteAddress);
+            InstBytes[i] = Guarded ? *Guarded : *static_cast<const uint8_t*>(FEXCore::G2H(ByteAddress));
+          }
+          auto Value = FEXCore::Utils::crc32(InstBytes, DecodedInfo->InstSize);
           auto CRC = WantsDiskCachePatching ?
                        Thread->OpDispatcher->_PatchableGuestCRC(IR::OpSize::i64Bit, Value, (int64_t)ExistingCodePtr, DecodedInfo->InstSize) :
                        Thread->OpDispatcher->Constant(Value);
@@ -935,11 +942,23 @@ static bool UnitNeedsValidation(FEXCore::HLE::SyscallHandler* Handler, const fex
   return false;
 }
 
-static uint64_t HashGuestRanges(const fextl::vector<std::pair<uint64_t, uint64_t>>& Ranges) {
+static uint64_t HashGuestRanges(FEXCore::Core::InternalThreadState* Thread, FEXCore::HLE::SyscallHandler* Handler,
+                                const fextl::vector<std::pair<uint64_t, uint64_t>>& Ranges) {
   // Chained: each range is hashed with the hash of the ranges before it as the seed.
   uint64_t Hash = 0;
   for (const auto& [Start, Size] : Ranges) {
-    Hash = XXH3_64bits_withSeed(FEXCore::G2H(Start), Size, Hash);
+    if (Handler->CanReadGuestCode(Start, Size)) {
+      Hash = XXH3_64bits_withSeed(FEXCore::G2H(Start), Size, Hash);
+      continue;
+    }
+    // Darwin port: a guarded host page. Through the decoder's views, as it read these bytes: reading the page opens it
+    // for every thread, which then read the 4 KiB pieces the guest forbids.
+    fextl::vector<uint8_t> Bytes(Size);
+    for (uint64_t i = 0; i < Size; ++i) {
+      const uint8_t* Guarded = Thread->FrontendDecoder->GuardedByte(Start + i);
+      Bytes[i] = Guarded ? *Guarded : *static_cast<const uint8_t*>(FEXCore::G2H(Start + i));
+    }
+    Hash = XXH3_64bits_withSeed(Bytes.data(), Size, Hash);
   }
   return Hash;
 }
@@ -992,7 +1011,7 @@ uintptr_t ContextImpl::CompileBlock(FEXCore::Core::CpuStateFrame* Frame, uint64_
       Executable = SyscallHandler->QueryGuestExecutableRange(Thread, Dead->CodePages[i]).Size != 0 &&
                    SyscallHandler->CanReadGuestCode(Dead->CodePages[i], FEXCore::Utils::FEX_PAGE_SIZE);
     }
-    if (Executable && HashGuestRanges(Dead->Ranges) == Dead->Hash) {
+    if (Executable && HashGuestRanges(Thread, SyscallHandler, Dead->Ranges) == Dead->Hash) {
       for (auto CodePage : Dead->CodePages) {
         fextl::set<uint64_t> Entries;
         for (const auto& [Guest, Host] : Dead->Entries) {
@@ -1180,7 +1199,7 @@ uintptr_t ContextImpl::CompileBlock(FEXCore::Core::CpuStateFrame* Frame, uint64_
         Unit.Ranges.emplace_back(Block.Entry, Block.Size);
       }
     }
-    Unit.Hash = HashGuestRanges(Unit.Ranges);
+    Unit.Hash = HashGuestRanges(Thread, SyscallHandler, Unit.Ranges);
     // Kept only if no invalidation of its pages was asked for since before the decoder ran: the bytes hashed are the
     // ones decoded.
     bool Touched = Faulting || Unit.Ranges.empty();

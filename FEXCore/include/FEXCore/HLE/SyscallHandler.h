@@ -52,6 +52,14 @@ public:
     return true;
   }
 
+  // Darwin port: the guest's code on a guarded host page, which is PROT_NONE on the host, read without opening the page:
+  // an open page lets every other thread read the 4 KiB pieces the guest forbids (a packer's encrypted code) without
+  // the fault the packer waits for. Views[i] is a read-only view of the bytes of the host page's i-th 4 KiB, nullptr
+  // for a piece that has none (read the guest's memory). False when the host page is not guarded.
+  virtual bool GuardedCodeViews(uint64_t HostPage, const uint8_t* Views[4]) {
+    return false;
+  }
+
   virtual void PreCompile() {}
   // After every block compilation (the decoder has read the guest's code), on every path out of it.
   virtual void PostCompile() {}

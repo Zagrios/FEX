@@ -591,6 +591,15 @@ uint64_t Arm64JITCore::ExitFunctionLink(FEXCore::Core::CpuStateFrame* Frame, FEX
       // Hold a reference to the code buffer, to avoid linking unmapped code if compilation triggers a recreation.
       auto CodeBuffer = static_cast<Arm64JITCore*>(Thread->CPUBackend.get())->CurrentCodeBuffer;
       HostCode = static_cast<Context::ContextImpl*>(Thread->CTX)->CompileBlock(Frame, GuestRip, 0);
+      if (!HostCode) {
+        // The block could not be translated: CompileBlock returns 0 when it cannot decode even the first instruction,
+        // for example a `mov %fs` write in 64-bit mode. Linking or returning 0 here would jump to address 0 and clean
+        // the cache line at address 0 a few lines down (a fault at address 0 in ExitFunctionLink, seen when an
+        // anti-cheat module loads). Hand the rip back to the dispatcher instead, as a lookup miss does, so its own
+        // compile path reports the failure.
+        Frame->State.rip = GuestRip;
+        return Frame->Pointers.DispatcherLoopTop;
+      }
       if (Thread->LookupCache->Shared != CodeBuffer->LookupCache.get()) {
         return HostCode;
       }

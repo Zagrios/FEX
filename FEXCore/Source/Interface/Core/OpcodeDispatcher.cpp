@@ -1245,38 +1245,30 @@ void OpDispatchBuilder::FLAGControlOp(OpcodeArgs) {
 
 
 void OpDispatchBuilder::MOVSegOp(OpcodeArgs, bool ToSeg) {
-  // In x86-64 mode the accesses to the segment registers end up being constant zero moves
-  // Aside from FS/GS
-  // In x86-64 mode the accesses to segment registers can actually still touch the segments
-  // These write to the selector portion of the register
-  //
-  // FS and GS are specially handled here though
-  // AMD documentation is /wrong/ in this regard
-  // AMD documentation claims that the MOV to SReg and POP SReg registers will load a 32bit
-  // value in to the HIDDEN portions of the FS and GS registers /OR/ ignored if a null selector is
-  // selected for the registers
-  // This statement is actually untrue, the instructions will /actually/ load 16bits in to the selector portion of the register!
-  // Tested on a Zen+ CPU, the selector is the portion that is modified!
-  // We don't currently support FS/GS selector modifying, so this needs to be asserted out
-  // The loads here also load the selector, NOT the base
+  // A MOV to a segment register loads the 16-bit selector and the hidden part from the descriptor it names. In 64-bit
+  // mode only the FS and GS bases are still used: a load sets the base to the descriptor's 32-bit base, zero-extended
+  // (Intel SDM vol. 3A, 3.4.4), which Wine's WoW64 relies on to give 32-bit code its TEB. Reads give the selector.
 
   if (ToSeg) {
     Ref Src = LoadSourceGPR_WithOpSize(Op, Op->Src[0], OpSize::i16Bit, Op->Flags);
 
     // A selector that names no descriptor ring 3 may load is #GP(selector) before the load, as on hardware: DS and ES
-    // take null or one of the user segments, SS only __USER_DS with RPL 3.
+    // take null or one of the user segments, SS only __USER_DS with RPL 3, FS and GS null or any descriptor of the
+    // thread's table that ring 3 may load (TLS entries included).
     const auto SegReg = Op->Dest.Data.GPR.GPR;
     const bool IsSS = SegReg == FEXCore::X86State::REG_RDX || SegReg == FEXCore::X86State::REG_R10;
     const bool IsDataSeg = IsSS || SegReg == FEXCore::X86State::REG_RAX || SegReg == FEXCore::X86State::REG_R8 ||
                            SegReg == FEXCore::X86State::REG_RBX || SegReg == FEXCore::X86State::REG_R11;
-    if (Is64BitMode && IsDataSeg) {
+    const bool IsFSGS = SegReg == FEXCore::X86State::REG_RSP || SegReg == FEXCore::X86State::REG_R12 ||
+                        SegReg == FEXCore::X86State::REG_RBP || SegReg == FEXCore::X86State::REG_R13;
+    if (Is64BitMode && (IsDataSeg || IsFSGS)) {
       Ref Valid {};
       if (IsSS) {
         Valid = _Select(OpSize::i32Bit, OpSize::i32Bit, CondClass::EQ, Src, Constant(0x2b), Constant(1), Constant(0));
       } else {
         auto Null = _Select(OpSize::i32Bit, OpSize::i32Bit, CondClass::EQ, _And(OpSize::i32Bit, Src, Constant(0xfffc)),
                             Constant(0), Constant(1), Constant(0));
-        Valid = _Or(OpSize::i32Bit, Null, LinuxUserSegment(Src).Valid);
+        Valid = _Or(OpSize::i32Bit, Null, IsFSGS ? FSGSLoadable(Src) : LinuxUserSegment(Src).Valid);
       }
       RaiseGPUnless(Op, Valid, CondClass::NEQ);
       // RaiseGPUnless starts new IR blocks and no value lives across blocks: load the selector again, or the load stores
@@ -1320,22 +1312,20 @@ void OpDispatchBuilder::MOVSegOp(OpcodeArgs, bool ToSeg) {
       break;
     case FEXCore::X86State::REG_RBP: // GS
     case FEXCore::X86State::REG_R13: // GS
-      if (!Is64BitMode) {
-        _StoreContextGPR(OpSize::i16Bit, Src, offsetof(FEXCore::Core::CPUState, gs_idx));
-        UpdatePrefixFromSegment(Src, FEXCore::X86Tables::DecodeFlags::FLAG_GS_PREFIX);
+      _StoreContextGPR(OpSize::i16Bit, Src, offsetof(FEXCore::Core::CPUState, gs_idx));
+      if (Is64BitMode) {
+        StoreFSGSBase64(Src, offsetof(FEXCore::Core::CPUState, gs_cached));
       } else {
-        LogMan::Msg::EFmt("We don't support modifying GS selector in 64bit mode!");
-        DecodeFailure = true;
+        UpdatePrefixFromSegment(Src, FEXCore::X86Tables::DecodeFlags::FLAG_GS_PREFIX);
       }
       break;
     case FEXCore::X86State::REG_RSP: // FS
     case FEXCore::X86State::REG_R12: // FS
-      if (!Is64BitMode) {
-        _StoreContextGPR(OpSize::i16Bit, Src, offsetof(FEXCore::Core::CPUState, fs_idx));
-        UpdatePrefixFromSegment(Src, FEXCore::X86Tables::DecodeFlags::FLAG_FS_PREFIX);
+      _StoreContextGPR(OpSize::i16Bit, Src, offsetof(FEXCore::Core::CPUState, fs_idx));
+      if (Is64BitMode) {
+        StoreFSGSBase64(Src, offsetof(FEXCore::Core::CPUState, fs_cached));
       } else {
-        LogMan::Msg::EFmt("We don't support modifying FS selector in 64bit mode!");
-        DecodeFailure = true;
+        UpdatePrefixFromSegment(Src, FEXCore::X86Tables::DecodeFlags::FLAG_FS_PREFIX);
       }
       break;
     default: UnimplementedOp(Op); return;
@@ -1362,19 +1352,11 @@ void OpDispatchBuilder::MOVSegOp(OpcodeArgs, bool ToSeg) {
       break;
     case FEXCore::X86State::REG_RBP: // GS
     case FEXCore::X86State::REG_R13: // GS
-      if (Is64BitMode) {
-        Segment = Constant(0);
-      } else {
-        Segment = _LoadContextGPR(OpSize::i16Bit, offsetof(FEXCore::Core::CPUState, gs_idx));
-      }
+      Segment = _LoadContextGPR(OpSize::i16Bit, offsetof(FEXCore::Core::CPUState, gs_idx));
       break;
     case FEXCore::X86State::REG_RSP: // FS
     case FEXCore::X86State::REG_R12: // FS
-      if (Is64BitMode) {
-        Segment = Constant(0);
-      } else {
-        Segment = _LoadContextGPR(OpSize::i16Bit, offsetof(FEXCore::Core::CPUState, fs_idx));
-      }
+      Segment = _LoadContextGPR(OpSize::i16Bit, offsetof(FEXCore::Core::CPUState, fs_idx));
       break;
     default: UnimplementedOp(Op); return;
     }
@@ -4359,26 +4341,64 @@ void OpDispatchBuilder::CheckLegacySegmentWrite(Ref NewNode, uint32_t SegmentReg
 #endif
 }
 
-void OpDispatchBuilder::UpdatePrefixFromSegment(Ref Segment, uint32_t SegmentReg) {
+// The 8-byte descriptor Selector names in the thread's GDT or LDT (its TI bit picks the table). OffsetMask keeps the
+// index within the table: 0xfff8 lets it reach the 8192 entries a selector can name, 0xf8 only the first 32.
+Ref OpDispatchBuilder::LoadSegmentDescriptor(Ref Selector, uint32_t OffsetMask) {
   // Use BFE to extract the selector index in bits [15,3] of the segment register.
   // In some cases the upper 16-bits of the 32-bit GPR contain garbage to ignore.
-  auto GDT = _Bfe(OpSize::i32Bit, 1, 2, Segment);
+  auto GDT = _Bfe(OpSize::i32Bit, 1, 2, Selector);
   // Fun quirk, if we mask the selector then it is premultiplied by 8 which we need to do for accessing anyway.
-  auto SegmentOffset = _And(OpSize::i32Bit, Segment, _Constant(0xfff8));
+  auto SegmentOffset = _And(OpSize::i32Bit, Selector, _Constant(OffsetMask));
   Ref SegmentBase = _LoadContextGPRIndexed(GDT, OpSize::i64Bit, offsetof(FEXCore::Core::CPUState, segment_arrays[0]), 8);
 #ifdef FEX_GUEST_BASE
   // Darwin port: the descriptor table is host memory but LoadMem adds the guest base to its address; remove it first so
   // the access lands on the host table (a segment register load otherwise faults at a random host address).
   SegmentBase = _Sub(OpSize::i64Bit, SegmentBase, _Constant(FEXCore::GuestBase));
 #endif
-  Ref NewSegment = _LoadMemGPR(OpSize::i64Bit, SegmentBase, SegmentOffset, OpSize::i8Bit, MemOffsetType::UXTW, 1);
+  return _LoadMemGPR(OpSize::i64Bit, SegmentBase, SegmentOffset, OpSize::i8Bit, MemOffsetType::UXTW, 1);
+}
+
+// The 32-bit base of a descriptor, zero-extended.
+Ref OpDispatchBuilder::SegmentDescriptorBase(Ref Descriptor) {
+  auto Upper32 = _Lshr(OpSize::i64Bit, Descriptor, _Constant(32));
+  auto Masked = _And(OpSize::i32Bit, Upper32, _Constant(0xFF00'0000));
+  Ref Merged = _Orlshr(OpSize::i32Bit, Masked, Descriptor, 16);
+  return _Bfi(OpSize::i32Bit, 8, 16, Merged, Upper32);
+}
+
+// Whether a MOV to FS or GS in 64-bit mode may load a selector that is not null: one that names a present data or
+// readable code descriptor of privilege 3, as on hardware. The index must stay below 32, the size of the GDT every
+// frontend gives a thread; FEXCore does not know the size of an LDT, so the same bound keeps its reads inside that
+// table too (frontends point the LDT at the GDT, and modify_ldt maps a page or more). Linux's GDT gives ring 3 four
+// such entries (0x23, 0x2b, 0x33, 0x7b) and up to three more through set_thread_area (0x63, 0x6b, 0x73).
+Ref OpDispatchBuilder::FSGSLoadable(Ref Selector) {
+  auto InTable = _Select(OpSize::i32Bit, OpSize::i32Bit, CondClass::EQ, _And(OpSize::i32Bit, Selector, Constant(0xff00)), Constant(0),
+                         Constant(1), Constant(0));
+  // The access byte: type in bits 0 to 3 (bit 3 code, bit 1 readable for code), then S, DPL and P.
+  auto Access = _Bfe(OpSize::i64Bit, 8, 40, LoadSegmentDescriptor(Selector, 0xf8));
+  auto PresentUser = _Select(OpSize::i32Bit, OpSize::i32Bit, CondClass::EQ, _And(OpSize::i32Bit, Access, Constant(0xf0)), Constant(0xf0),
+                             Constant(1), Constant(0));
+  auto Readable = _Select(OpSize::i32Bit, OpSize::i32Bit, CondClass::NEQ, _And(OpSize::i32Bit, Access, Constant(0x0a)), Constant(0x08),
+                          Constant(1), Constant(0));
+  return _And(OpSize::i32Bit, InTable, _And(OpSize::i32Bit, PresentUser, Readable));
+}
+
+// The base a MOV to FS or GS loads in 64-bit mode, once FSGSLoadable accepted the selector: the descriptor's 32-bit base
+// over all 64 bits of the one ARCH_SET_FS or WRFSBASE left. A null selector leaves the base as it was, as AMD
+// processors without NullSelectorClearsBase do (Intel's clear it).
+void OpDispatchBuilder::StoreFSGSBase64(Ref Selector, uint32_t CachedOffset) {
+  auto Null = _And(OpSize::i32Bit, Selector, Constant(0xfffc));
+  auto Base = SegmentDescriptorBase(LoadSegmentDescriptor(Selector, 0xf8));
+  auto Old = _LoadContextGPR(OpSize::i64Bit, CachedOffset);
+  _StoreContextGPR(OpSize::i64Bit, _Select(OpSize::i64Bit, OpSize::i32Bit, CondClass::EQ, Null, Constant(0), Old, Base), CachedOffset);
+}
+
+void OpDispatchBuilder::UpdatePrefixFromSegment(Ref Segment, uint32_t SegmentReg) {
+  Ref NewSegment = LoadSegmentDescriptor(Segment, 0xfff8);
   CheckLegacySegmentWrite(NewSegment, SegmentReg);
 
   // Extract the 32-bit base from the GDT segment.
-  auto Upper32 = _Lshr(OpSize::i64Bit, NewSegment, _Constant(32));
-  auto Masked = _And(OpSize::i32Bit, Upper32, _Constant(0xFF00'0000));
-  Ref Merged = _Orlshr(OpSize::i32Bit, Masked, NewSegment, 16);
-  NewSegment = _Bfi(OpSize::i32Bit, 8, 16, Merged, Upper32);
+  NewSegment = SegmentDescriptorBase(NewSegment);
 
   switch (SegmentReg) {
   case FEXCore::X86Tables::DecodeFlags::FLAG_ES_PREFIX:

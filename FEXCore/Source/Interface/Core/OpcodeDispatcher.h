@@ -1570,6 +1570,10 @@ private:
   Ref GetSegment(uint32_t Flags, uint32_t DefaultPrefix = FEXCore::X86Tables::DecodeFlags::FLAG_NO_PREFIX, bool Override = false);
 
   void UpdatePrefixFromSegment(Ref Segment, uint32_t SegmentReg);
+  Ref LoadSegmentDescriptor(Ref Selector, uint32_t OffsetMask);
+  Ref SegmentDescriptorBase(Ref Descriptor);
+  Ref FSGSLoadable(Ref Selector);
+  void StoreFSGSBase64(Ref Selector, uint32_t CachedOffset);
 
   Ref LoadGPRRegister(uint32_t GPR, IR::OpSize Size = OpSize::iInvalid, uint8_t Offset = 0, bool AllowUpperGarbage = false);
   void StoreGPRRegister(uint32_t GPR, const Ref Src, IR::OpSize Size = OpSize::iInvalid, uint8_t Offset = 0);

@@ -73,31 +73,42 @@ DEF_OP(Break) {
     .TrapNo = Op->Reason.TrapNumber,
     .si_code = Op->Reason.si_code,
     .err_code = Op->Reason.ErrorRegister,
+    .FaultAddress = 0, // Comes from SSA argument.
   };
 
   uint64_t Constant {};
-  memcpy(&Constant, &State, sizeof(State));
+  memcpy(&Constant, &State, sizeof(uint64_t));
 
-  LoadConstant(ARMEmitter::Size::i64Bit, TMP1, Constant);
+  LoadConstant(ARMEmitter::Size::i64Bit, TMP1, static_cast<uint64_t>(Constant));
+
+  auto FaultGPR = GetZeroableReg(Op->FaultAddress);
+
+  // Can't use stp, offset is too large.
   str(TMP1, STATE, offsetof(FEXCore::Core::CpuStateFrame, SynchronousFaultData));
+  str(FaultGPR.X(), STATE, offsetof(FEXCore::Core::CpuStateFrame, SynchronousFaultData) + 8);
 
-  switch (Op->Reason.Signal) {
-  case Core::FAULT_SIGILL:
-    ldr(TMP1, STATE, offsetof(FEXCore::Core::CpuStateFrame, Pointers.GuestSignal_SIGILL));
+  if (CTX->HostFeatures.ProcessFeatures.SupportsFaultFreeSynchronousFaults) {
+    ldr(TMP1, STATE, offsetof(FEXCore::Core::CpuStateFrame, Pointers.GuestSignal_SynchronousFault));
     br(TMP1);
-    break;
-  case Core::FAULT_SIGTRAP:
-    ldr(TMP1, STATE, offsetof(FEXCore::Core::CpuStateFrame, Pointers.GuestSignal_SIGTRAP));
-    br(TMP1);
-    break;
-  case Core::FAULT_SIGSEGV:
-    ldr(TMP1, STATE, offsetof(FEXCore::Core::CpuStateFrame, Pointers.GuestSignal_SIGSEGV));
-    br(TMP1);
-    break;
-  default:
-    ldr(TMP1, STATE, offsetof(FEXCore::Core::CpuStateFrame, Pointers.GuestSignal_SIGTRAP));
-    br(TMP1);
-    break;
+  } else {
+    switch (Op->Reason.Signal) {
+    case Core::FAULT_SIGILL:
+      ldr(TMP1, STATE, offsetof(FEXCore::Core::CpuStateFrame, Pointers.GuestSignal_SIGILL));
+      br(TMP1);
+      break;
+    case Core::FAULT_SIGTRAP:
+      ldr(TMP1, STATE, offsetof(FEXCore::Core::CpuStateFrame, Pointers.GuestSignal_SIGTRAP));
+      br(TMP1);
+      break;
+    case Core::FAULT_SIGSEGV:
+      ldr(TMP1, STATE, offsetof(FEXCore::Core::CpuStateFrame, Pointers.GuestSignal_SIGSEGV));
+      br(TMP1);
+      break;
+    default:
+      ldr(TMP1, STATE, offsetof(FEXCore::Core::CpuStateFrame, Pointers.GuestSignal_SIGTRAP));
+      br(TMP1);
+      break;
+    }
   }
 }
 

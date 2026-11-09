@@ -53,6 +53,7 @@ enum trapno {
     CHECK(from_handler->mctx.gregs[REG_ERR] == EXPECTED_ERR);       \
     CHECK(from_handler->si_code == EXPECTED_SI_CODE);               \
     CHECK(from_handler->signal == EXPECTED_SIGNAL);                 \
+    from_handler.reset();                                           \
   }
 
 // Instructions that explicitly are supported but must only work in CPL-0
@@ -93,6 +94,7 @@ TEST(24, "sysexit", "sysexitd", X86_TRAPNO_UD, 0, 2, SIGILL);
 #endif
 
 TEST(25, "in eax, dx", "in eax, dx", X86_TRAPNO_GP, 0, 0x80, SIGSEGV);
+TEST(26, "xsetbv", "xsetbv", X86_TRAPNO_GP, 0, 0x80, SIGSEGV);
 // Differs between dr8 and dr0-7 variants.
 // dr0-7: SIGSEGV
 // dr8-15: SIGILL

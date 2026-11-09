@@ -47,34 +47,9 @@ $end_info$
 #endif
 
 namespace {
-struct DivRem {
-  uint64_t Quotient;
-  uint64_t Remainder;
-};
-
-static struct DivRem LUDIV(uint64_t SrcHigh, uint64_t SrcLow, uint64_t Divisor) {
-  __uint128_t Source = (static_cast<__uint128_t>(SrcHigh) << 64) | SrcLow;
-
-  return {
-    .Quotient = (uint64_t)(Source / Divisor),
-    .Remainder = (uint64_t)(Source % Divisor),
-  };
-}
-
-static struct DivRem
-LDIV(uint64_t SrcHigh, uint64_t SrcLow, int64_t Divisor) {
-  __int128_t Source = (static_cast<__uint128_t>(SrcHigh) << 64) | SrcLow;
-
-  return {
-    .Quotient = (uint64_t)(Source / Divisor),
-    .Remainder = (uint64_t)(Source % Divisor),
-  };
-}
-
 #ifndef _WIN32
 
-static std::optional<uint64_t>
-RDRANDFallback(uint64_t Reseed) {
+static std::optional<uint64_t> RDRANDFallback(uint64_t Reseed) {
   uint64_t Value {};
   FHU::Syscalls::getrandom(&Value, sizeof(Value), 0);
   return Value;
@@ -88,8 +63,7 @@ RDRANDFallback(uint64_t Reseed) {
 
 // Reference implementation by Sebastiano Vigna, public domain (CC0)
 // https://prng.di.unimi.it/splitmix64.c
-static std::atomic<uint64_t>
-  RNGState {static_cast<uint64_t>(__builtin_readcyclecounter())};
+static std::atomic<uint64_t> RNGState {static_cast<uint64_t>(__builtin_readcyclecounter())};
 
 static std::optional<uint64_t> RDRANDFallback(uint64_t Reseed) {
   const uint64_t State = RNGState.load(std::memory_order_relaxed) + 0x9E3779B97F4A7C15ULL;
@@ -664,9 +638,9 @@ void Arm64JITCore::Op_NoOp(const IR::IROp_Header* IROp, IR::Ref Node) {}
 Arm64JITCore::Arm64JITCore(FEXCore::Context::ContextImpl* ctx, FEXCore::Core::InternalThreadState* Thread)
   : CPUBackend(*ctx, Thread)
   , Arm64Emitter(ctx)
-  , HostSupportsSVE128 {ctx->HostFeatures.SupportsSVE128 != 0}
-  , HostSupportsSVE256 {ctx->HostFeatures.SupportsSVE256 != 0}
-  , HostSupportsAVX256 {ctx->HostFeatures.SupportsAVX && ctx->HostFeatures.SupportsSVE256}
+  , HostSupportsSVE128 {ctx->HostFeatures.SupportsSVE128()}
+  , HostSupportsSVE256 {ctx->HostFeatures.SupportsSVE256()}
+  , HostSupportsAVX256 {ctx->HostFeatures.SupportsAVX() && ctx->HostFeatures.SupportsSVE256()}
   , HostSupportsRPRES {ctx->HostFeatures.SupportsRPRES != 0}
   , HostSupportsAFP {ctx->HostFeatures.SupportsAFP != 0}
   , CTX {ctx}
@@ -710,8 +684,6 @@ Arm64JITCore::Arm64JITCore(FEXCore::Context::ContextImpl* ctx, FEXCore::Core::In
       Ptrs.SyscallHandlerFunc = PMF.GetVTableEntry(CTX->SyscallHandler);
     }
     Ptrs.ExitFunctionLink = reinterpret_cast<uintptr_t>(&Arm64JITCore::ExitFunctionLink);
-    Ptrs.LUDIV = reinterpret_cast<uint64_t>(LUDIV);
-    Ptrs.LDIV = reinterpret_cast<uint64_t>(LDIV);
     Ptrs.RDRANDFallback = reinterpret_cast<uint64_t>(RDRANDFallback);
   }
 
@@ -803,13 +775,17 @@ void Arm64JITCore::EmitTFCheck() {
     .TrapNo = X86State::X86_TRAPNO_DB,
     .si_code = 2,
     .err_code = 0,
+    .FaultAddress = 0,
   };
 
   uint64_t Constant {};
-  memcpy(&Constant, &State, sizeof(State));
+  memcpy(&Constant, &State, sizeof(uint64_t));
 
-  LoadConstant(ARMEmitter::Size::i64Bit, TMP1, Constant);
+  LoadConstant(ARMEmitter::Size::i64Bit, TMP1, static_cast<uint64_t>(Constant));
+  // Can't use stp, offset is too large.
   str(TMP1, STATE, offsetof(FEXCore::Core::CpuStateFrame, SynchronousFaultData));
+  str(ARMEmitter::XReg::zr, STATE, offsetof(FEXCore::Core::CpuStateFrame, SynchronousFaultData) + 8);
+
   ldr(TMP1, STATE, offsetof(FEXCore::Core::CpuStateFrame, Pointers.GuestSignal_SIGTRAP));
   br(TMP1);
 
@@ -897,9 +873,9 @@ CodeBuffer::CodeBufferAllocation Arm64JITCore::AllocateCodeBufferInSharedCache(s
   return AllocatedInfo;
 }
 
-CPUBackend::CompiledCode Arm64JITCore::CompileCode(uint64_t Entry, uint64_t Size, bool SingleInst, const FEXCore::IR::IRListView* IR,
+CPUBackend::CompiledCode Arm64JITCore::EmitJITCode(uint64_t Entry, uint64_t Size, bool SingleInst, const FEXCore::IR::IRListView* IR,
                                                    FEXCore::Core::DebugData* DebugData, bool CheckTF) {
-  FEXCORE_PROFILE_SCOPED("Arm64::CompileCode");
+  FEXCORE_PROFILE_SCOPED("Arm64::EmitJITCode");
 
   const auto PrevNumAllocations = Relocations.size();
 

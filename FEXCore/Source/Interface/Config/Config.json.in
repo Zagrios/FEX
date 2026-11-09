@@ -51,6 +51,19 @@
           "Enable expensive validation when loading code caches"
         ]
       },
+      "JITFeatures": {
+        "Type": "strenum",
+        "Default": "FEXCore::Config::JITFeatures::OFF",
+        "AffectsCodeGen": "true",
+        "Enums": {
+          "ENABLEX87FIP": "enablex87fip"
+        },
+        "Desc": [
+          "Allows controlling JIT features in the unified location",
+          "\toff: Default JIT features.",
+          "\tenablex87fip: Turns on the x87 FIP emulation feature"
+        ]
+      },
       "HostFeatures": {
         "Type": "strenum",
         "Default": "FEXCore::Config::HostFeatures::OFF",
@@ -104,7 +117,11 @@
           "ENABLEI8MM": "enablei8mm",
           "DISABLEI8MM": "disablei8mm",
           "ENABLEDOTPROD": "enabledotprod",
-          "DISABLEDOTPROD": "disabledotprod"
+          "DISABLEDOTPROD": "disabledotprod",
+          "ENABLEBF16": "enablebf16",
+          "DISABLEBF16": "disablebf16",
+          "ENABLETPIDRRO": "enabletpidrro",
+          "DISABLETPIDRRO": "disabletpidrro"
         },
         "Desc": [
           "Allows controlling of the CPU features in the JIT.",
@@ -131,7 +148,9 @@
           "\t{enable,disable}sse4a: Will force enable or disable SSE4a even if the host doesn't support it",
           "\t{enable,disable}mops: Will force enable or disable FEAT_MOPS even if the host doesn't support it",
           "\t{enable,disable}i8mm: Will force enable or disable i8mm even if the host doesn't support it",
-          "\t{enable,disable}dotprod: Will force enable or disable dotprod even if the host doesn't support it"
+          "\t{enable,disable}dotprod: Will force enable or disable dotprod even if the host doesn't support it",
+          "\t{enable,disable}bf16: Will force enable or disable bf16 even if the host doesn't support it",
+          "\t{enable,disable}tpidrro: Will force enable or disable tpidrro for CPU index even if the host doesn't support it"
         ]
       },
       "SmallTSCScale": {
@@ -362,6 +381,15 @@
           "Lower numbers means more conservative memory savings.",
           "Can potentially introduce more stutters, more likely the higher the number.",
           "Don't have this number larger than the increase count!"
+        ]
+      },
+      "UndefinedFlagAcidTest": {
+        "Type": "bool",
+        "Default": "false",
+        "AffectsCodeGen": "true",
+        "Desc": [
+          "Ensures that all undefined flags generate consistent results",
+          "This is a useful test to determine if undefined flags are causing problems"
         ]
       }
     },

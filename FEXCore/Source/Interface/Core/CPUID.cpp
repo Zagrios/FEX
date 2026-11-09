@@ -89,6 +89,18 @@ namespace ProductNames {
   static const char ARM_Blizzard_M2Pro[] = "Apple Blizzard (M2 Pro)";
   static const char ARM_Avalanche_M2Max[] = "Apple Avalanche (M2 Max)";
   static const char ARM_Blizzard_M2Max[] = "Apple Blizzard (M2 Max)";
+  static const char ARM_Sawtooth_M3[] = "Apple Sawtooth (M3)";
+  static const char ARM_Everest_M3[] = "Apple Everest (M3)";
+  static const char ARM_Sawtooth_M3Pro[] = "Apple Sawtooth (M3 Pro)";
+  static const char ARM_Everest_M3Pro[] = "Apple Everest (M3 Pro)";
+  static const char ARM_Sawtooth_M3Max[] = "Apple Sawtooth (M3 Max)";
+  static const char ARM_Everest_M3Max[] = "Apple Everest (M3 Max)";
+  static const char ARM_DonanP_M4[] = "Apple DonanP (M4)";
+  static const char ARM_DonanE_M4[] = "Apple DonanE (M4)";
+  static const char ARM_TahitiP_A18[] = "Apple TahitiP (A18)";
+  static const char ARM_TahitiE_A18[] = "Apple TahitiE (A18)";
+  static const char ARM_SotraP_M5[] = "Apple SotraP (M5)";
+  static const char ARM_SotraE_M5[] = "Apple SotraE (M5)";
   static const char ARM_AppleSilicon[] = "Apple Silicon";
 
   static const char ARM_ORYON_1[] = "Oryon-1";
@@ -187,11 +199,17 @@ void CPUIDEmu::SetupHostHybridFlag() {
   // CPU priority order
   // This is mostly arbitrary but will sort by some sort of CPU priority by performance
   // Relative list so things they will commonly end up in big.little configurations sort of relate
-  static constexpr std::array<CPUMIDR, 68> CPUMIDRs = {{
+  static constexpr std::array<CPUMIDR, 80> CPUMIDRs = {{
     // Typically big CPU cores
     {0x51, 0x002, 1, ProductNames::ARM_ORYON_3}, // Qualcomm Oryon-3
     {0x51, 0x001, 1, ProductNames::ARM_ORYON_1}, // Qualcomm Oryon-1
 
+    {0x61, 0x065, 1, ProductNames::ARM_SotraP_M5},       // Apple SotraP (M5)
+    {0x61, 0x061, 1, ProductNames::ARM_TahitiP_A18},     // Apple TahitiP (A18)
+    {0x61, 0x053, 1, ProductNames::ARM_DonanP_M4},       // Apple DonanP (M4)
+    {0x61, 0x048, 1, ProductNames::ARM_Sawtooth_M3Max},  // Apple Sawtooth (M3 Max)
+    {0x61, 0x044, 1, ProductNames::ARM_Sawtooth_M3Pro},  // Apple Sawtooth (M3 Pro)
+    {0x61, 0x042, 1, ProductNames::ARM_Sawtooth_M3},     // Apple Sawtooth (M3)
     {0x61, 0x039, 1, ProductNames::ARM_Avalanche_M2Max}, // Apple Avalanche (M2 Max)
     {0x61, 0x035, 1, ProductNames::ARM_Avalanche_M2Pro}, // Apple Avalanche (M2 Pro)
     {0x61, 0x033, 1, ProductNames::ARM_Avalanche_M2},    // Apple Avalanche (M2)
@@ -248,6 +266,12 @@ void CPUIDEmu::SetupHostHybridFlag() {
     {0x41, 0xd07, 1, ProductNames::ARM_A57}, // A57
 
     // Typically Little CPU cores
+    {0x61, 0x064, 1, ProductNames::ARM_SotraE_M5},      // Apple SotraE (M5)
+    {0x61, 0x060, 1, ProductNames::ARM_TahitiE_A18},    // Apple TahitiE (A18)
+    {0x61, 0x052, 1, ProductNames::ARM_DonanE_M4},      // Apple DonanE (M4)
+    {0x61, 0x049, 0, ProductNames::ARM_Everest_M3Max},  // Apple Everest (M3 Max)
+    {0x61, 0x045, 0, ProductNames::ARM_Everest_M3Pro},  // Apple Everest (M3 Pro)
+    {0x61, 0x043, 0, ProductNames::ARM_Everest_M3},     // Apple Everest (M3)
     {0x61, 0x038, 0, ProductNames::ARM_Blizzard_M2Max}, // Apple Blizzard (M2 Max)
     {0x61, 0x034, 0, ProductNames::ARM_Blizzard_M2Pro}, // Apple Blizzard (M2 Pro)
     {0x61, 0x032, 0, ProductNames::ARM_Blizzard_M2},    // Apple Blizzard (M2)
@@ -419,7 +443,7 @@ void CPUIDEmu::SetupHostHybridFlag() {}
 
 
 void CPUIDEmu::SetupFeatures() {
-  if (CTX->HostFeatures.SupportsAVX) {
+  if (CTX->HostFeatures.SupportsAVX()) {
     XCR0 |= XCR0_AVX;
   }
 
@@ -673,6 +697,9 @@ FEXCore::CPUID::FunctionResults CPUIDEmu::Function_07h(uint32_t Leaf) const {
     const uint32_t SupportsWFXT = CTX->HostFeatures.SupportsWFXT;
 
     const uint32_t SupportsRAND = CTX->HostFeatures.SupportsRAND || CTX->SoftwareRNGEnabled();
+    // When the X87 FIP feature is enabled, we update the state pointers on every instruction.
+    // We don't even update them on exception so this isn't quite true the other way anyway.
+    const uint32_t X87DataPtrExcept = (CTX->Config.JITFeatures & FEXCore::Config::JITFeatures::ENABLEX87FIP) == 0;
 
     // Number of subfunctions
     // TODO: For now, subfunction 1 only exposes AVX-VNNI so we make it conditional
@@ -684,7 +711,7 @@ FEXCore::CPUID::FunctionResults CPUIDEmu::Function_07h(uint32_t Leaf) const {
               (SupportsAVX() << 3) |           // BMI1
               (0 << 4) |                       // Intel Hardware Lock Elison
               (SupportsAVX() << 5) |           // AVX2 support
-              (1 << 6) |                       // FPU data pointer updated only on exception
+              (X87DataPtrExcept << 6) |        // FPU data pointer updated only on exception
               (1 << 7) |                       // SMEP support
               (SupportsAVX() << 8) |           // BMI2
               (SupportsEnhancedREPMOVS << 9) | // Enhanced REP MOVSB/STOSB
@@ -758,7 +785,7 @@ FEXCore::CPUID::FunctionResults CPUIDEmu::Function_07h(uint32_t Leaf) const {
               (0 << 11) |                  // rtm-always-abort
               (0 << 12) |                  // Reserved
               (0 << 13) |                  // TSX Force Abort (TSX will force abort if attempted)
-              (0 << 14) |                  // SERIALIZE instruction
+              (1 << 14) |                  // SERIALIZE instruction
               ((Hybrid ? 1U : 0U) << 15) | // Hybrid
               (0 << 16) |                  // TSXLDTRK (TSX Suspend load address tracking) - Allows untracked memory loads inside TSX region
               (0 << 17) |                  // Reserved
@@ -777,6 +804,8 @@ FEXCore::CPUID::FunctionResults CPUIDEmu::Function_07h(uint32_t Leaf) const {
               (0 << 30) |                  // Arch capabilities - MSR module specific
               (0 << 31);                   // SSBD - Speculative Store Bypass Disable
   } else if (Leaf == 1) {
+    const uint32_t SupportsAVXConvert = SupportsAVX() && CTX->HostFeatures.SupportsBF16;
+
     Res.eax = (0U << 0) |              // SHA512
               (0U << 1) |              // SM3
               (0U << 2) |              // SM4
@@ -825,31 +854,31 @@ FEXCore::CPUID::FunctionResults CPUIDEmu::Function_07h(uint32_t Leaf) const {
               (0U << 5);  // MSR_IMM
 
     // Bits 25-31 also reserved.
-    Res.edx = (0U << 0) |  // Reserved
-              (0U << 1) |  // Reserved
-              (0U << 2) |  // Reserved
-              (0U << 3) |  // Reserved
-              (0U << 4) |  // AVX_VNNI_INT8
-              (0U << 5) |  // AVX_NE_CONVERT
-              (0U << 6) |  // Reserved
-              (0U << 7) |  // Reserved
-              (0U << 8) |  // AMX_COMPLEX
-              (0U << 9) |  // Reserved
-              (0U << 10) | // AVX_VNNI_INT16
-              (0U << 11) | // Reserved
-              (0U << 12) | // Reserved
-              (0U << 13) | // UTMR (User-timer events)
-              (0U << 14) | // PREFETCHI
-              (0U << 15) | // USER_MSR
-              (0U << 16) | // Reserved
-              (0U << 17) | // UIRET_UIF
-              (0U << 18) | // CET_SSS
-              (0U << 19) | // AVX10
-              (0U << 20) | // Reserved
-              (0U << 21) | // APX_F
-              (0U << 22) | // SEC-TEE_ATTESTATION
-              (0U << 23) | // MWAIT
-              (0U << 24);  // SLSM (Static LSM)
+    Res.edx = (0U << 0) |                 // Reserved
+              (0U << 1) |                 // Reserved
+              (0U << 2) |                 // Reserved
+              (0U << 3) |                 // Reserved
+              (0U << 4) |                 // AVX_VNNI_INT8
+              (SupportsAVXConvert << 5) | // AVX_NE_CONVERT
+              (0U << 6) |                 // Reserved
+              (0U << 7) |                 // Reserved
+              (0U << 8) |                 // AMX_COMPLEX
+              (0U << 9) |                 // Reserved
+              (0U << 10) |                // AVX_VNNI_INT16
+              (0U << 11) |                // Reserved
+              (0U << 12) |                // Reserved
+              (0U << 13) |                // UTMR (User-timer events)
+              (0U << 14) |                // PREFETCHI
+              (0U << 15) |                // USER_MSR
+              (0U << 16) |                // Reserved
+              (0U << 17) |                // UIRET_UIF
+              (0U << 18) |                // CET_SSS
+              (0U << 19) |                // AVX10
+              (0U << 20) |                // Reserved
+              (0U << 21) |                // APX_F
+              (0U << 22) |                // SEC-TEE_ATTESTATION
+              (0U << 23) |                // MWAIT
+              (0U << 24);                 // SLSM (Static LSM)
   } else if (Leaf == 2) {
     // All bits are reserved except for EDX
     Res.eax = 0;
@@ -1133,14 +1162,14 @@ FEXCore::CPUID::FunctionResults CPUIDEmu::Function_8000_0004h(uint32_t Leaf) con
 
 FEXCore::CPUID::FunctionResults CPUIDEmu::Function_8000_0002h(uint32_t Leaf, uint32_t CPU) const {
   FEXCore::CPUID::FunctionResults Res {};
-  auto& Data = PerCPUData[CPU];
+  auto& Data = PerCPUData[std::min<uint32_t>(CPU, PerCPUData.size() - 1)];
   memcpy(&Res, Data.ProductName, std::min(strlen(Data.ProductName), sizeof(FEXCore::CPUID::FunctionResults)));
   return Res;
 }
 
 FEXCore::CPUID::FunctionResults CPUIDEmu::Function_8000_0003h(uint32_t Leaf, uint32_t CPU) const {
   FEXCore::CPUID::FunctionResults Res {};
-  auto& Data = PerCPUData[CPU];
+  auto& Data = PerCPUData[std::min<uint32_t>(CPU, PerCPUData.size() - 1)];
   const auto RemainingStringSize = std::max<ssize_t>(0, strlen(Data.ProductName) - 16);
   memcpy(&Res, Data.ProductName + 16, std::min<size_t>(RemainingStringSize, sizeof(FEXCore::CPUID::FunctionResults)));
   return Res;
@@ -1148,7 +1177,7 @@ FEXCore::CPUID::FunctionResults CPUIDEmu::Function_8000_0003h(uint32_t Leaf, uin
 
 FEXCore::CPUID::FunctionResults CPUIDEmu::Function_8000_0004h(uint32_t Leaf, uint32_t CPU) const {
   FEXCore::CPUID::FunctionResults Res {};
-  auto& Data = PerCPUData[CPU];
+  auto& Data = PerCPUData[std::min<uint32_t>(CPU, PerCPUData.size() - 1)];
   const auto RemainingStringSize = std::max<ssize_t>(0, strlen(Data.ProductName) - 32);
   memcpy(&Res, Data.ProductName + 32, std::min<size_t>(RemainingStringSize, sizeof(FEXCore::CPUID::FunctionResults)));
   return Res;

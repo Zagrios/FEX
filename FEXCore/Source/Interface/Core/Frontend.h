@@ -30,6 +30,10 @@ public:
     PARTIAL_DECODE_INST,
     BAD_RELOCATION,
     UNIMPLEMENTED_INST,
+    BREAKPOINT_0,
+    BREAKPOINT_1,
+    BREAKPOINT_2,
+    BREAKPOINT_3,
   };
 
   enum class DataMaskType : uint8_t { NONE, MOV, BRANCH, DISP, NOP };
@@ -125,7 +129,10 @@ private:
   void DetectDataMasks(uint64_t OpAddress, DecodedBlocks& Block);
   void PruneInlinedBranchDataMasks();
 
-  bool CheckRangeExecutable(uint64_t Address, uint64_t Size);
+  // Check for the number of bytes that are able to be decoded as executable
+  // Size: Returns Size if able to decode all bytes.
+  // Negative: Number of bytes that failed to decode.
+  int32_t CheckRangeExecutable(uint64_t Address, uint64_t Size);
 
   uint8_t ReadByte();
   std::optional<uint8_t> PeekByte(uint8_t Offset);
@@ -163,6 +170,7 @@ private:
   bool ExecutableRangeWritable {};
   bool HitNonExecutableRange {};
   bool HitBadRelocation {};
+  uint32_t HitBreakpoint {~0U};
 
   // Darwin port: the host page the decoder last read (SyscallHandler::GuardedCodeViews) and, when it is a guarded one,
   // the views it reads its 4 KiB pieces through.

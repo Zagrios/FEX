@@ -18,6 +18,7 @@ $end_info$
 #endif
 
 #include "Common/HostFeatures.h"
+#include "Common/X86Features.h"
 #include "Common/Linux/SBRKAllocations.h"
 #include "HarnessHelpers.h"
 #include "TestHarnessRunner/HostRunner.h"
@@ -44,9 +45,6 @@ $end_info$
 #include <sys/types.h>
 #include <utility>
 
-#ifdef ARCHITECTURE_x86_64
-#include "Common/X86Features.h"
-#endif
 
 void MsgHandler(LogMan::DebugLevels Level, const char* Message) {
   fextl::fmt::print("{} {}\n", LogMan::DebugLevelStr(Level), Message);
@@ -245,11 +243,11 @@ int main(int argc, char** argv, char** const envp) {
   bool SupportsAVX = false;
   FEXCore::Core::CPUState State;
 
-  auto HostFeatures = FEX::FetchHostFeatures();
+  auto HostFeatures = FEX::FetchHostFeatures(Loader.Is64BitMode());
   auto CTX = FEXCore::Context::Context::CreateNewContext(HostFeatures);
 
 #ifndef _WIN32
-  auto SignalDelegation = FEX::HLE::CreateSignalDelegator(CTX.get(), {}, HostFeatures.SupportsAVX, HostFeatures.SupportsSVE256);
+  auto SignalDelegation = FEX::HLE::CreateSignalDelegator(CTX.get(), {}, HostFeatures.SupportsAVX(), HostFeatures.SupportsSVE256());
 #else
   // Enable exit on HLT while Wine's longjump is broken.
   //
@@ -259,20 +257,30 @@ int main(int argc, char** argv, char** const envp) {
 #endif
 
   // Skip any tests that the host doesn't support features for
-  SupportsAVX = HostFeatures.SupportsAVX;
+  SupportsAVX = HostFeatures.SupportsAVX();
 
   bool TestUnsupported = (!SupportsAVX && Loader.RequiresAVX()) || (!HostFeatures.SupportsRAND && Loader.RequiresRAND()) ||
                          (!HostFeatures.SupportsSHA && Loader.RequiresSHA()) || (!HostFeatures.SupportsCLZERO && Loader.RequiresCLZERO()) ||
                          (!HostFeatures.SupportsAES256 && Loader.RequiresAES256()) || (!HostFeatures.SupportsAFP && Loader.RequiresAFP());
-
+  TestUnsupported |= !HostFeatures.SupportsBF16 && Loader.RequiresAVXNEConvert();
 
   bool IsHostRunner = false;
 #if !defined(VIXL_SIMULATOR) && defined(ARCHITECTURE_x86_64)
   IsHostRunner = true;
-  ///< Features that are only unsupported when running using the HostRunner and the CI machine doesn't support the feature getting tested.
   FEX::X86::Features Feature {};
-  const bool Supports3DNow = Feature.Feat_3dnow;
+
   const bool SupportsSSE4A = Feature.Feat_sse4a;
+
+  // Hostrunner doesn't support EMMI while FEX does. CPUID doesn't have a query bit.
+  TestUnsupported |= Loader.RequiresEMMI();
+#else
+  FEX::X86::Features Feature {CTX.get()};
+
+  // Override features that FEX default disables.
+  const bool SupportsSSE4A = true;
+#endif
+
+  const bool Supports3DNow = Feature.Feat_3dnow;
   const bool SupportsBMI1 = Feature.Feat_bmi1;
   const bool SupportsBMI2 = Feature.Feat_bmi2;
   const bool SupportsCLWB = Feature.Feat_clwb;
@@ -288,6 +296,12 @@ int main(int argc, char** argv, char** const envp) {
   const bool SupportsCLFLOPT = Feature.Feat_clflopt;
   const bool SupportsFSGSBase = Feature.Feat_fsgsbase;
   const bool SupportsAVXVNNI = Feature.Feat_avx_vnni;
+  const bool SupportsSerialize = Feature.Feat_serialize;
+  const bool SupportsAVXNEConvert = Feature.Feat_avx_ne_convert;
+  const bool SupportsSHA512 = Feature.Feat_sha512;
+  const bool SupportsAVXIFMA = Feature.Feat_avx_ifma;
+  const bool SupportsAVXVNNIINT8 = Feature.Feat_avx_vnni_int8;
+  const bool SupportsAVXVNNIINT16 = Feature.Feat_avx_vnni_int16;
 
   TestUnsupported |=
     (!Supports3DNow && Loader.Requires3DNow()) || (!SupportsSSE4A && Loader.RequiresSSE4A()) || (!SupportsBMI1 && Loader.RequiresBMI1()) ||
@@ -295,9 +309,14 @@ int main(int argc, char** argv, char** const envp) {
     (!SupportsSSE4_1 && Loader.RequiresSSE4_1()) || (!SupportsSSE4_2 && Loader.RequiresSSE4_2()) ||
     (!SupportsAES && Loader.RequiresAES()) || (!SupportsPCLMUL && Loader.RequiresPCLMUL()) || (!SupportsMOVBE && Loader.RequiresMOVBE()) ||
     (!SupportsADX && Loader.RequiresADX()) || (!SupportsXSAVE && Loader.RequiresXSAVE()) || (!SupportsRDPID && Loader.RequiresRDPID()) ||
-    (!SupportsCLFLOPT && Loader.RequiresCLFLOPT()) || (!SupportsFSGSBase && Loader.RequiresFSGSBase()) || Loader.RequiresEMMI();
+    (!SupportsCLFLOPT && Loader.RequiresCLFLOPT()) || (!SupportsFSGSBase && Loader.RequiresFSGSBase());
   TestUnsupported |= !SupportsAVXVNNI && Loader.RequiresAVXVNNI();
-#endif
+  TestUnsupported |= !SupportsSerialize && Loader.RequiresSerialize();
+  TestUnsupported |= !SupportsAVXNEConvert && Loader.RequiresAVXNEConvert();
+  TestUnsupported |= !SupportsSHA512 && Loader.RequiresSHA512();
+  TestUnsupported |= !SupportsAVXIFMA && Loader.RequiresAVXIFMA();
+  TestUnsupported |= !SupportsAVXVNNIINT8 && Loader.RequiresAVXVNNIINT8();
+  TestUnsupported |= !SupportsAVXVNNIINT16 && Loader.RequiresAVXVNNIINT16();
 
 #ifdef _WIN32
   TestUnsupported |= Loader.RequiresLinux();

@@ -212,9 +212,12 @@ public:
     FlushRegisterCache();
     return _ExitFunction(GetOpSize(NewRIP), NewRIP, Hint, CallReturnAddress, CallReturnBlock, PatchSiteAddress, PatchSiteSize);
   }
-  IRPair<IROp_Break> Break(BreakDefinition Reason) {
+  IRPair<IROp_Break> Break(BreakDefinition Reason, Ref RelocatedPC = nullptr) {
     FlushRegisterCache();
-    return _Break(Reason);
+    if (!RelocatedPC) {
+      RelocatedPC = Constant(0);
+    }
+    return _Break(Reason, RelocatedPC);
   }
   IRPair<IROp_Thunk> Thunk(Ref ArgPtr, SHA256Sum ThunkNameHash) {
     FlushRegisterCache();
@@ -222,6 +225,8 @@ public:
   }
 
   bool FinishOp(uint64_t NextRIP, bool LastOp) {
+    ++RegCache.Index;
+
     // If we are switching to a new block and this current block has yet to set a RIP
     // Then we need to insert an unconditional jump from the current block to the one we are going to
     // This happens most frequently when an instruction jumps backwards to another location
@@ -374,7 +379,6 @@ public:
   void LAROp(OpcodeArgs);
   void VERROp(OpcodeArgs);
   void VERWOp(OpcodeArgs);
-  void SLDTOp(OpcodeArgs);
   void STROp(OpcodeArgs);
   struct SegmentDescriptor {
     Ref Valid, Limit, Rights;
@@ -506,6 +510,7 @@ public:
   void SGDTOp(OpcodeArgs);
   void SIDTOp(OpcodeArgs);
   void SMSWOp(OpcodeArgs);
+  void SLDTOp(OpcodeArgs);
 
   enum class VectorOpType {
     MMX,
@@ -773,6 +778,7 @@ public:
   void X87LDENV(OpcodeArgs);
   void X87ModifySTP(OpcodeArgs, bool Inc);
   void X87OpHelper(OpcodeArgs, FEXCore::IR::IROps IROp, bool ZeroC2);
+  void X87NOP(OpcodeArgs);
 
   enum class FCOMIFlags {
     FLAGS_X87,
@@ -846,6 +852,7 @@ public:
   void LoadFenceOrXRSTOR(OpcodeArgs);
   void MemFenceOrXSAVEOPT(OpcodeArgs);
   void StoreFenceOrCLFlush(OpcodeArgs);
+  void SerializeOp(OpcodeArgs);
   void UMonitorOrCLRSSBSY(OpcodeArgs);
   void UMWaitOp(OpcodeArgs);
   void CLZeroOp(OpcodeArgs);
@@ -912,7 +919,8 @@ public:
   void Extrq(OpcodeArgs);
   void Insertq(OpcodeArgs);
 
-  void BreakOp(OpcodeArgs, FEXCore::IR::BreakDefinition BreakDefinition);
+  void BreakOp(OpcodeArgs, FEXCore::IR::BreakDefinition BreakDefinition, Ref RelocatedPC = nullptr);
+  void BreakpointOp(OpcodeArgs, uint32_t BP);
   void UnimplementedOp(OpcodeArgs);
   void PermissionRestrictedOp(OpcodeArgs);
 
@@ -1110,6 +1118,11 @@ public:
 
   void AVX128_VCVTPH2PS(OpcodeArgs);
   void AVX128_VCVTPS2PH(OpcodeArgs);
+  void AVX128_VBCSTNEBF162PS(OpcodeArgs);
+  void AVX128_VBCSTNESH2PS(OpcodeArgs);
+  void AVX128_VCVTNEEBF162PS(OpcodeArgs, bool Even);
+  void AVX128_VCVTNEEPH2PS(OpcodeArgs, bool Even);
+  void AVX128_VCVTNEPS2BF16(OpcodeArgs);
 
   // End of AVX 128-bit implementation
 
@@ -1144,10 +1157,16 @@ public:
   void AVXVectorUnaryOp(OpcodeArgs, IROps IROp, IR::OpSize ElementSize);
   void AVXVectorVariableBlend(OpcodeArgs, IR::OpSize ElementSize);
 
+  void AVXVBCSTNEBF162PS(OpcodeArgs);
+  void AVXVBCSTNESH2PS(OpcodeArgs);
+  void AVXVCVTNEEBF162PS(OpcodeArgs, bool Even);
+  void AVXVCVTNEEPH2PS(OpcodeArgs, bool Even);
+  void AVXVCVTNEPS2BF16(OpcodeArgs);
+
   // End of AVX 256-bit implementation
 
   void InvalidOp(OpcodeArgs);
-  void NoExecOp(OpcodeArgs);
+  void NoExecOrPartialOp(OpcodeArgs);
 
   void SetPackedRFLAG(bool Lower8, Ref Src);
   Ref GetPackedRFLAG(uint32_t FlagsMask = ~0U);
@@ -1201,10 +1220,20 @@ public:
     if (!SRAOnly) {
       RectifyCarryInvert(CFInvertedABI);
 
-      // Also we can't trust the LastDef accross block boundaries, so clear that as well.
+      // Also we can't trust the LastDef or PrevDef arrays accross block boundaries, so clear them as well.
       for (auto& Def : RegCache.LastDef) {
         Def = nullptr;
       }
+      for (auto& Def : RegCache.PrevDef) {
+        Def = nullptr;
+      }
+      for (auto& DefIndex : RegCache.LastDefIndex) {
+        DefIndex = 0;
+      }
+      for (auto& DefIndex : RegCache.PrevDefIndex) {
+        DefIndex = 0;
+      }
+      RegCache.Index = 0;
     }
 
     if (!MMXOnly) {
@@ -1321,7 +1350,7 @@ protected:
       /* On ASIMD platforms, the emulation happens to preserve NZCV, unlike the
        * more optimal SVE implementation that clobbers.
        */
-      if (!CTX->HostFeatures.SupportsSVE128 && !CTX->HostFeatures.SupportsSVE256) {
+      if (!CTX->HostFeatures.SupportsSVE()) {
         return;
       }
 
@@ -1342,6 +1371,7 @@ protected:
 
 private:
   FEX_CONFIG_OPT(ReducedPrecisionMode, X87REDUCEDPRECISION);
+  FEX_CONFIG_OPT(UndefinedFlagAcidTest, UNDEFINEDFLAGACIDTEST);
 
   struct JumpTargetInfo {
     Ref BlockEntry;
@@ -1524,7 +1554,7 @@ private:
   void SaveAVXState(Ref MemBase);
 
   void XRstorOpImpl(OpcodeArgs);
-  void RestoreX87State(Ref MemBase);
+  void RestoreX87State(OpcodeArgs, Ref MemBase);
   void RestoreSSEState(Ref MemBase);
   void RestoreMXCSRState(Ref MXCSR);
   void RestoreAVXState(Ref MemBase);
@@ -1667,7 +1697,7 @@ private:
   }
 
   constexpr OpSize GetGuestVectorLength() const {
-    return (CTX->HostFeatures.SupportsSVE256 && CTX->HostFeatures.SupportsAVX) ? OpSize::i256Bit : OpSize::i128Bit;
+    return (CTX->HostFeatures.SupportsSVE256() && CTX->HostFeatures.SupportsAVX()) ? OpSize::i256Bit : OpSize::i128Bit;
   }
 
   [[nodiscard]]
@@ -1928,6 +1958,55 @@ private:
     InvalidateReg(Core::CPUState::AF_AS_GREG);
   }
 
+  // Sets the desired flags to zero when acid test is enabled.
+  // Not meant to be fast, just meant to produce consistent results.
+  void AcidTestFlags(unsigned BitOffset = 0, unsigned BitOffset2 = 0, unsigned BitOffset3 = 0, unsigned BitOffset4 = 0,
+                     unsigned BitOffset5 = 0, unsigned BitOffset6 = 0) {
+    if (!UndefinedFlagAcidTest) [[likely]] {
+      return;
+    }
+
+    unsigned BitFlags {};
+    if (BitOffset) {
+      BitFlags |= 1U << BitOffset;
+    }
+    if (BitOffset2) {
+      BitFlags |= 1U << BitOffset2;
+    }
+    if (BitOffset3) {
+      BitFlags |= 1U << BitOffset3;
+    }
+    if (BitOffset4) {
+      BitFlags |= 1U << BitOffset4;
+    }
+    if (BitOffset5) {
+      BitFlags |= 1U << BitOffset5;
+    }
+    if (BitOffset6) {
+      BitFlags |= 1U << BitOffset6;
+    }
+
+    auto Flag = Constant(0);
+    if (BitFlags & (1U << X86State::RFLAG_SF_RAW_LOC)) {
+      SetRFLAG(Flag, FEXCore::X86State::RFLAG_SF_RAW_LOC);
+    }
+    if (BitFlags & (1U << X86State::RFLAG_ZF_RAW_LOC)) {
+      SetRFLAG(Flag, FEXCore::X86State::RFLAG_ZF_RAW_LOC);
+    }
+    if (BitFlags & (1U << X86State::RFLAG_CF_RAW_LOC)) {
+      SetRFLAG(Flag, FEXCore::X86State::RFLAG_CF_RAW_LOC);
+    }
+    if (BitFlags & (1U << X86State::RFLAG_OF_RAW_LOC)) {
+      SetRFLAG(Flag, FEXCore::X86State::RFLAG_OF_RAW_LOC);
+    }
+    if (BitFlags & (1U << X86State::RFLAG_AF_RAW_LOC)) {
+      SetRFLAG(Flag, FEXCore::X86State::RFLAG_AF_RAW_LOC);
+    }
+    if (BitFlags & (1U << X86State::RFLAG_AF_RAW_LOC)) {
+      SetRFLAG(Flag, FEXCore::X86State::RFLAG_AF_RAW_LOC);
+    }
+  }
+
   [[nodiscard]]
   static CondClass CondForNZCVBit(unsigned BitOffset, bool Invert) {
     switch (BitOffset) {
@@ -1995,8 +2074,16 @@ private:
     Ref Value[64];
 
     // Keep track of where each register was last written to within the current block,
-    // for use in peephole optimizations.
+    // for use in peephole optimizations. LastDefIndex is a parallel structure,
+    // which tracks the index of each Op in LastDef.
     Ref LastDef[64];
+    uint32_t LastDefIndex[64];
+    // Similar to LastDef, but tracks the write before LastDef. Think of it as LastDef^2.
+    Ref PrevDef[64];
+    uint32_t PrevDefIndex[64];
+
+    // The index of the current instruction in the current block.
+    uint32_t Index;
   } RegCache {};
 
   void InvalidateReg(uint8_t Index) {
@@ -2123,7 +2210,10 @@ private:
     RegCache.Value[Index] = Value;
     RegCache.Cached |= Bit;
     RegCache.Written |= Bit;
+    RegCache.PrevDef[Index] = RegCache.LastDef[Index];
+    RegCache.PrevDefIndex[Index] = RegCache.LastDefIndex[Index];
     RegCache.LastDef[Index] = Value;
+    RegCache.LastDefIndex[Index] = RegCache.Index;
   }
 
   void InvalidateHighAVXRegisters() {
@@ -2235,8 +2325,7 @@ private:
     Ref V_inv = GetRFLAG(FEXCore::X86State::RFLAG_OF_RAW_LOC, true);
     SetRFLAG<FEXCore::X86State::RFLAG_PF_RAW_LOC>(V_inv);
 
-    // Intel: OF, SF, and AF set to zero
-    // AMD:   no mention of OF, SF and AF but actual hardware seems to always zero
+    // Both Intel and AMD manual state that OF, SF, and AF are set to zero.
     //
     // Zero AF. Note that the comparison sets the raw PF to 0/1 above, so
     // PF[4] is 0 so the XOR with PF will have no effect, so setting the AF
@@ -2467,6 +2556,12 @@ private:
   void SetX87FTW(Ref FTW);
   Ref GetX87FTW_Helper();
   void SetX87Top(Ref Value);
+  void StoreX87FIP(FEXCore::X86Tables::DecodedOp Op) {
+    if (CTX->Config.JITFeatures & FEXCore::Config::JITFeatures::ENABLEX87FIP) {
+      // Only store FIP if the feature is enabled.
+      _StoreContextGPR(OpSize::i64Bit, GetRelocatedPC(Op, -Op->InstSize), offsetof(FEXCore::Core::CPUState, FIP));
+    }
+  }
 
   void ChgStateX87_MMX() override {
     LOGMAN_THROW_A_FMT(MMXState == MMXState_X87, "Expected state to be x87");

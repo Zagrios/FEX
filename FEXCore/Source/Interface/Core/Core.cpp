@@ -292,8 +292,8 @@ uint32_t ContextImpl::ReconstructCompactedEFLAGS(FEXCore::Core::InternalThreadSt
 void ContextImpl::ReconstructXMMRegisters(const FEXCore::Core::InternalThreadState* Thread, __uint128_t* XMM_Low, __uint128_t* YMM_High) {
   const size_t MaximumRegisters = Config.Is64BitMode ? FEXCore::Core::CPUState::NUM_XMMS : 8;
 
-  if (YMM_High != nullptr && HostFeatures.SupportsAVX) {
-    const bool SupportsConvergedRegisters = HostFeatures.SupportsSVE256;
+  if (YMM_High != nullptr && HostFeatures.SupportsAVX()) {
+    const bool SupportsConvergedRegisters = HostFeatures.SupportsSVE256();
 
     if (SupportsConvergedRegisters) {
       ///< Output wants to de-interleave
@@ -316,8 +316,8 @@ void ContextImpl::ReconstructXMMRegisters(const FEXCore::Core::InternalThreadSta
 
 void ContextImpl::SetXMMRegistersFromState(FEXCore::Core::InternalThreadState* Thread, const __uint128_t* XMM_Low, const __uint128_t* YMM_High) {
   const size_t MaximumRegisters = Config.Is64BitMode ? FEXCore::Core::CPUState::NUM_XMMS : 8;
-  if (YMM_High != nullptr && HostFeatures.SupportsAVX) {
-    const bool SupportsConvergedRegisters = HostFeatures.SupportsSVE256;
+  if (YMM_High != nullptr && HostFeatures.SupportsAVX()) {
+    const bool SupportsConvergedRegisters = HostFeatures.SupportsSVE256();
 
     if (SupportsConvergedRegisters) {
       ///< Output wants to de-interleave
@@ -787,13 +787,19 @@ ContextImpl::GenerateIR(FEXCore::Core::InternalThreadState* Thread, uint64_t Gue
               LogMan::Msg::EFmt("Invalid or Unknown instruction: {} 0x{:x}", TableInfo->Name ?: "UND", Block.Entry - GuestRIP);
             }
 
-            if (Block.BlockStatus == Frontend::Decoder::DecodedBlockStatus::INVALID_INST ||
-                Block.BlockStatus == Frontend::Decoder::DecodedBlockStatus::BAD_RELOCATION) {
+            if (Block.BlockStatus == Frontend::Decoder::DecodedBlockStatus::BREAKPOINT_0 ||
+                Block.BlockStatus == Frontend::Decoder::DecodedBlockStatus::BREAKPOINT_1 ||
+                Block.BlockStatus == Frontend::Decoder::DecodedBlockStatus::BREAKPOINT_2 ||
+                Block.BlockStatus == Frontend::Decoder::DecodedBlockStatus::BREAKPOINT_3) {
+              Thread->OpDispatcher->BreakpointOp(DecodedInfo, FEXCore::ToUnderlying(Block.BlockStatus) -
+                                                                FEXCore::ToUnderlying(Frontend::Decoder::DecodedBlockStatus::BREAKPOINT_0));
+            } else if (Block.BlockStatus == Frontend::Decoder::DecodedBlockStatus::INVALID_INST ||
+                       Block.BlockStatus == Frontend::Decoder::DecodedBlockStatus::BAD_RELOCATION) {
               Thread->OpDispatcher->InvalidOp(DecodedInfo);
             } else if (Block.BlockStatus == Frontend::Decoder::DecodedBlockStatus::UNIMPLEMENTED_INST) {
               Thread->OpDispatcher->UnimplementedOp(DecodedInfo);
             } else {
-              Thread->OpDispatcher->NoExecOp(DecodedInfo);
+              Thread->OpDispatcher->NoExecOrPartialOp(DecodedInfo);
             }
           }
 
@@ -906,7 +912,7 @@ ContextImpl::CompileCodeResult ContextImpl::CompileCode(FEXCore::Core::InternalT
   // If the trap flag is set we generate single instruction blocks that each check to generate a single step exception.
   bool TFSet = Thread->CurrentFrame->State.flags[X86State::RFLAG_TF_RAW_LOC];
 
-  auto CompiledCode = Thread->CPUBackend->CompileCode(GuestRIP, Length, TotalInstructions == 1, &*IRView, DebugData.get(), TFSet);
+  auto CompiledCode = Thread->CPUBackend->EmitJITCode(GuestRIP, Length, TotalInstructions == 1, &*IRView, DebugData.get(), TFSet);
 
   // Release the IR
   Thread->OpDispatcher->DelayedDisownBuffer();

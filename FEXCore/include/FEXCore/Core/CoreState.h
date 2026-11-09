@@ -71,6 +71,12 @@ static_assert(std::is_standard_layout_v<NonAtomicRefCounter<uint64_t>>, "Needs t
 static_assert(std::is_trivially_copyable_v<NonAtomicRefCounter<uint64_t>>, "needs to be trivially copyable");
 static_assert(sizeof(NonAtomicRefCounter<uint64_t>) == sizeof(uint64_t), "Needs to be correct size");
 
+// Flags about the core state that the JIT can query.
+enum class CoreFlagsEnum : uint64_t {
+  CPUID_ENABLED = (1ULL << 0),
+};
+FEX_DEF_NUM_OPS(CoreFlagsEnum)
+
 struct alignas(64) CPUState {
   // Allows more efficient handling of the register
   // file in the event AVX is not supported.
@@ -107,7 +113,9 @@ struct alignas(64) CPUState {
   uint64_t L1Pointer {};
   uint64_t L1Mask {};
   uint64_t callret_sp {};
-  uint64_t _pad1 {};
+
+  // CPUID is default enabled.
+  CoreFlagsEnum CoreFlags {CoreFlagsEnum::CPUID_ENABLED};
 
   // Cacheline: 1,2,3,4
   // The high 128-bits of AVX registers when not being emulated by SVE256.
@@ -188,10 +196,41 @@ struct alignas(64) CPUState {
     GDT->Limit1 = Limit >> 16;
   }
 
+  static bool IsInstructionBPEnabled(unsigned BPIndex, uint64_t Dr7) {
+    LOGMAN_THROW_A_FMT(BPIndex < NUM_DEBUG_ADDRESSES, "Too large of an index");
+
+    // If the GE/LE flags and Transaction type is instruction then it is enabled.
+    uint64_t GELEEnabledMask = 0b11ULL << (2 * BPIndex);
+    uint64_t TransactionTypeMask = 0b11ULL << (16 + (4 * BPIndex));
+    return (Dr7 & GELEEnabledMask) && (Dr7 & TransactionTypeMask) == 0;
+  };
+
+  static size_t BreakpointSize(unsigned BPIndex, uint64_t Dr7) {
+    LOGMAN_THROW_A_FMT(BPIndex < NUM_DEBUG_ADDRESSES, "Too large of an index");
+
+    switch ((Dr7 >> (18 + (4 * BPIndex))) & 0b11) {
+    case 0: return 1;
+    case 1: return 2;
+    case 2: return 8;
+    case 3: return 4;
+    default: FEX_UNREACHABLE;
+    }
+  }
+
   uint16_t FCW {0x37F};
   uint8_t AbridgedFTW {};
 
   uint8_t _pad2[5];
+  uint64_t FIP {};
+
+  // Debug registers 0-3 are addresses.
+  static constexpr size_t NUM_DEBUG_ADDRESSES = 4;
+  uint64_t Dr[NUM_DEBUG_ADDRESSES] {};
+  // Debug register 6 is a status return register.
+  uint64_t Dr6 {};
+  // Debug register 7 is the control register.
+  uint64_t Dr7 {};
+
   // PF/AF are statically mapped as-if they were r16/r17 (which do not exist in
   // x86 otherwise). This allows a straightforward mapping for SRA.
   static constexpr uint8_t PF_AS_GREG = 16;
@@ -247,7 +286,6 @@ struct alignas(64) CPUState {
   // Follows encoding of the TI bit in segment selector encoding.
   constexpr static uint32_t SEGMENT_ARRAY_INDEX_GDT = 0;
   constexpr static uint32_t SEGMENT_ARRAY_INDEX_LDT = 1;
-  Core::CPUState::gdt_segment private_gdt[32] {};
 };
 static_assert(std::is_trivially_copyable_v<CPUState>, "Needs to be trivial");
 static_assert(std::is_standard_layout_v<CPUState>, "This needs to be standard layout");
@@ -348,13 +386,17 @@ struct JITPointers {
   uint64_t SyscallHandlerFunc {};
   uint64_t ExitFunctionLink {};
   uint64_t MonoBackpatcherWrite {};
-  uint64_t LUDIV {};
-  uint64_t LDIV {};
   uint64_t RDRANDFallback {};
   uint64_t ThunkCallbackRet {};
 
+  /**
+   * @name Frontend handler pointers.
+   * @{ */
   // Handles returning/calling ARM64EC code from the JIT, expects the target PC in TMP3
   uint64_t ExitFunctionEC {};
+  // Handles a synchronous exception without faulting to jump in to the handler. Frontend specific.
+  uint64_t SynchronousExceptionHandler {};
+  /**  @} */
 
   FallbackABIInfo FallbackHandlerPointers[FallbackHandlerIndex::OPINDEX_MAX];
   uint64_t NamedVectorConstantPointers[FEXCore::IR::NamedVectorConstant::NAMED_VECTOR_CONST_POOL_MAX];
@@ -372,15 +414,15 @@ struct JITPointers {
   uint64_t ThreadStopHandlerSpillSRA {};
   uint64_t ThreadPauseHandlerSpillSRA {};
   uint64_t ThreadDispatchSyscallHandler {};
+  uint64_t ThreadDispatchCPUIDHandler {};
   uint64_t ThreadDispatchRemoveCodeEntry {};
   uint64_t GuestSignal_SIGILL {};
   uint64_t GuestSignal_SIGTRAP {};
   uint64_t GuestSignal_SIGSEGV {};
+  uint64_t GuestSignal_SynchronousFault {};
   uint64_t SignalReturnHandler {};
   uint64_t SignalReturnHandlerRT {};
   uint64_t L2Pointer {};
-  uint64_t LUDIVHandler {};
-  uint64_t LDIVHandler {};
   uint64_t F64SinHandler {};
   uint64_t F64CosHandler {};
   uint64_t F64TanHandler {};
@@ -417,16 +459,18 @@ struct CpuStateFrame {
    */
   uint64_t InSyscallInfo {};
 
-  uint32_t SignalHandlerRefCounter {};
-
-  struct alignas(8) SynchronousFaultDataStruct {
+  struct SynchronousFaultDataStruct {
     bool FaultToTopAndGeneratedException {};
     uint8_t Signal;
     uint8_t TrapNo;
     uint8_t si_code;
     uint16_t err_code;
     uint16_t _pad : 16;
+    // Fault address can be different from the FaultRIP so need to distinguish.
+    uint64_t FaultAddress;
   } SynchronousFaultData;
+
+  uint32_t SignalHandlerRefCounter {};
 
   InternalThreadState* Thread;
 
@@ -444,7 +488,7 @@ static_assert(offsetof(CpuStateFrame, Pointers) + sizeof(CpuStateFrame::Pointers
                                                                                             "than architecture maximum 32768");
 
 static_assert(std::is_standard_layout<CpuStateFrame>::value, "This needs to be standard layout");
-static_assert(sizeof(CpuStateFrame::SynchronousFaultData) == 8, "This needs to be 8 bytes");
+static_assert(sizeof(CpuStateFrame::SynchronousFaultData) == 16, "This needs to be 16 bytes");
 static_assert(alignof(CpuStateFrame::SynchronousFaultDataStruct) == 8, "This needs to be 8 bytes");
 static_assert(offsetof(CpuStateFrame, SynchronousFaultData) % 8 == 0, "This needs to be aligned");
 } // namespace FEXCore::Core

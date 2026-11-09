@@ -450,6 +450,67 @@ static void LoadStateFromECContext(FEXCore::Core::InternalThreadState* Thread, C
     State.flags[FEXCore::X86State::X87FLAG_TOP_LOC] = (Context.FltSave.StatusWord >> 11) & 0b111;
     State.AbridgedFTW = Context.FltSave.TagWord;
   }
+
+  // TODO: These are super incorrect for debug registers.
+  if constexpr (false) {
+    if ((Context.ContextFlags & CONTEXT_DEBUG_REGISTERS) == CONTEXT_DEBUG_REGISTERS) {
+      // If any of the debug register state changed then we need to invalidate.
+      const bool Dr0Changed = (Context.Dr0 != State.Dr[0]) || ((Context.Dr7 ^ State.Dr7) & ((0b1111 << 16) | (0b11 << 0)));
+      const bool Dr1Changed = (Context.Dr1 != State.Dr[1]) || ((Context.Dr7 ^ State.Dr7) & ((0b1111 << 20) | (0b11 << 2)));
+      const bool Dr2Changed = (Context.Dr2 != State.Dr[2]) || ((Context.Dr7 ^ State.Dr7) & ((0b1111 << 24) | (0b11 << 4)));
+      const bool Dr3Changed = (Context.Dr3 != State.Dr[3]) || ((Context.Dr7 ^ State.Dr7) & ((0b1111 << 28) | (0b11 << 6)));
+
+      if (Dr0Changed || Dr1Changed || Dr2Changed || Dr3Changed) {
+        std::scoped_lock Lock(ThreadCreationMutex);
+        // Need to clear both context and state addresses if changed.
+        // Only if the BP type was instruction class.
+        if (Dr0Changed) {
+          if (Context.Dr0 && ((Context.Dr7 >> 16) & 0b11) == 0) {
+            InvalidationTracker->InvalidateAlignedInterval(Context.Dr0, 8, false);
+          }
+
+          if (State.Dr[0] && ((State.Dr7 >> 16) & 0b11) == 0) {
+            InvalidationTracker->InvalidateAlignedInterval(State.Dr[0], 8, false);
+          }
+        }
+        if (Dr1Changed) {
+          if (Context.Dr1 && ((Context.Dr7 >> 20) & 0b11) == 0) {
+            InvalidationTracker->InvalidateAlignedInterval(Context.Dr1, 8, false);
+          }
+
+          if (State.Dr[1] && ((State.Dr7 >> 20) & 0b11) == 0) {
+            InvalidationTracker->InvalidateAlignedInterval(State.Dr[1], 8, false);
+          }
+        }
+        if (Dr2Changed) {
+          if (Context.Dr2 && ((Context.Dr7 >> 24) & 0b11) == 0) {
+            InvalidationTracker->InvalidateAlignedInterval(Context.Dr2, 8, false);
+          }
+
+          if (State.Dr[2] && ((State.Dr7 >> 24) & 0b11) == 0) {
+            InvalidationTracker->InvalidateAlignedInterval(State.Dr[2], 8, false);
+          }
+        }
+        if (Dr3Changed) {
+          if (Context.Dr3 && ((Context.Dr7 >> 28) & 0b11) == 0) {
+            InvalidationTracker->InvalidateAlignedInterval(Context.Dr3, 8, false);
+          }
+
+          if (State.Dr[3] && ((State.Dr7 >> 28) & 0b11) == 0) {
+            InvalidationTracker->InvalidateAlignedInterval(State.Dr[3], 8, false);
+          }
+        }
+      }
+
+      // Update context now that we have invalidated.
+      State.Dr[0] = Context.Dr0;
+      State.Dr[1] = Context.Dr1;
+      State.Dr[2] = Context.Dr2;
+      State.Dr[3] = Context.Dr3;
+      State.Dr6 = Context.Dr6;
+      State.Dr7 = Context.Dr7;
+    }
+  }
 }
 
 static void ReconstructThreadState(FEXCore::Core::InternalThreadState* Thread, ARM64_NT_CONTEXT& Context) {
@@ -471,6 +532,16 @@ static void ReconstructThreadState(FEXCore::Core::InternalThreadState* Thread, A
   // Spill EFlags
   uint32_t EFlags = CTX->ReconstructCompactedEFLAGS(Thread, true, Context.X, Context.Cpsr);
   CTX->SetFlagsFromCompactedEFLAGS(Thread, EFlags);
+
+  // TODO: These are super incorrect for debug registers.
+  if constexpr (false) {
+    State.Dr[0] = Context.Bvr[0];
+    State.Dr[1] = Context.Bvr[1];
+    State.Dr[2] = Context.Bvr[2];
+    State.Dr[3] = Context.Bvr[3];
+    State.Dr6 = Context.Bcr[0];
+    State.Dr7 = Context.Bcr[1];
+  }
 }
 
 // Reconstructs an x64 context from the input thread's state, packed into a regular ARM64 context following the ARM64EC register mapping
@@ -539,19 +610,22 @@ static ARM64_NT_CONTEXT StoreStateToPackedECContext(FEXCore::Core::InternalThrea
   ECContext.Fpcr = FPCR;
   ECContext.Fpsr = FPSR;
 
+  // TODO: These are super incorrect for debug registers.
+  if constexpr (false) {
+    // Debug registers
+    ECContext.Bvr[0] = State.Dr[0];
+    ECContext.Bvr[1] = State.Dr[1];
+    ECContext.Bvr[2] = State.Dr[2];
+    ECContext.Bvr[3] = State.Dr[3];
+    ECContext.Bcr[0] = State.Dr6;
+    ECContext.Bcr[1] = State.Dr7;
+  }
+
   return ECContext;
 }
 
-static void RethrowGuestException(const EXCEPTION_RECORD& Rec, ARM64_NT_CONTEXT& Context) {
-  auto* Thread = GetCPUArea().ThreadState();
+static void RaiseException(FEXCore::Core::InternalThreadState* Thread, const EXCEPTION_RECORD& Rec, ARM64_NT_CONTEXT& GuestContext) {
   auto& Fault = Thread->CurrentFrame->SynchronousFaultData;
-
-  LogMan::Msg::DFmt("Reconstructing context");
-  if (!IsDispatcherAddress(Context.Pc)) {
-    ReconstructThreadState(Thread, Context);
-  }
-  ARM64_NT_CONTEXT GuestContext = StoreStateToPackedECContext(Thread, Context.Fpcr, Context.Fpsr);
-  LogMan::Msg::DFmt("pc: {:X} rip: {:X}", Context.Pc, GuestContext.Pc);
 
   // X64 Windows always clears TF, DF and AF when handling an exception, restoring after.
   // Current ARM64EC windows can only restore NZCV+SS when returning from an exception and other flags are left untouched from the handler context.
@@ -570,6 +644,47 @@ static void RethrowGuestException(const EXCEPTION_RECORD& Rec, ARM64_NT_CONTEXT&
   }
 
   NtRaiseExceptionNative(&GuestRec, &GuestContext, FirstChance);
+}
+
+static void RethrowGuestException(FEXCore::Core::InternalThreadState* Thread, const EXCEPTION_RECORD& Rec, ARM64_NT_CONTEXT& HostContext) {
+  LogMan::Msg::DFmt("Reconstructing context");
+  if (!IsDispatcherAddress(HostContext.Pc)) {
+    ReconstructThreadState(Thread, HostContext);
+  }
+  auto GuestContext = StoreStateToPackedECContext(Thread, HostContext.Fpcr, HostContext.Fpsr);
+  LogMan::Msg::DFmt("pc: {:X} rip: {:X}", HostContext.Pc, GuestContext.Pc);
+
+  RaiseException(Thread, Rec, GuestContext);
+}
+
+[[noreturn]]
+static void SynchronousExceptionHandler(FEXCore::Context::Context* CTX, FEXCore::Core::CpuStateFrame* Frame) {
+  // Coming in to this function, the guest state is synchronized and the host thread is in a safe location.
+  auto Thread = Frame->Thread;
+  auto& Fault = Thread->CurrentFrame->SynchronousFaultData;
+
+  uint64_t FPCR, FPSR;
+  __asm volatile("mrs %[fpcr], fpcr" : [fpcr] "=r"(FPCR));
+  __asm volatile("mrs %[fpsr], fpsr" : [fpsr] "=r"(FPSR));
+
+  auto Context = StoreStateToPackedECContext(Thread, static_cast<uint32_t>(FPCR), static_cast<uint32_t>(FPSR));
+  EXCEPTION_RECORD Record = {};
+
+  switch (Fault.Signal) {
+  case FEXCore::Core::FAULT_SIGILL: Record.ExceptionCode = EXCEPTION_ILLEGAL_INSTRUCTION; break;
+  case FEXCore::Core::FAULT_SIGTRAP:
+    switch (Fault.TrapNo) {
+    case FEXCore::X86State::X86_TRAPNO_DB: Record.ExceptionCode = EXCEPTION_SINGLE_STEP; break;
+    case FEXCore::X86State::X86_TRAPNO_BP: Record.ExceptionCode = EXCEPTION_BREAKPOINT; break;
+    default: LogMan::Msg::EFmt("Unknown SIGTRAP trap: {}", Fault.TrapNo); break;
+    }
+    break;
+  case FEXCore::Core::FAULT_SIGSEGV: Record.ExceptionCode = EXCEPTION_ACCESS_VIOLATION; break;
+  default: ERROR_AND_DIE_FMT("Unknown fault signal"); break;
+  }
+
+  RaiseException(Thread, Record, Context);
+  ERROR_AND_DIE_FMT("This should always noreturn");
 }
 
 class ECSyscallHandler : public FEXCore::HLE::SyscallHandler, public FEXCore::Allocator::FEXAllocOperators {
@@ -788,6 +903,11 @@ bool ResetToConsistentStateImpl(const ThreadCPUArea CPUArea, EXCEPTION_RECORD* E
     return true;
   }
 
+  if (NativeContext->Pc == reinterpret_cast<uint64_t>(&FEXCore::Assert::ForcedAssert)) {
+    LogMan::Msg::DFmt("FEX: Forced assert");
+    NtTerminateProcess(NtCurrentProcess(), 0x42);
+  }
+
   if (!IsJIT && !IsDispatcherAddress(NativeContext->Pc)) {
     LogMan::Msg::DFmt("Passing through exception");
     return false;
@@ -805,7 +925,7 @@ bool ResetToConsistentStateImpl(const ThreadCPUArea CPUArea, EXCEPTION_RECORD* E
   }
 
   if (IsEmulatorStackAddress(CPUArea, reinterpret_cast<uint64_t>(__builtin_frame_address(0)))) {
-    Exception::RethrowGuestException(*Exception, *NativeContext);
+    Exception::RethrowGuestException(Thread, *Exception, *NativeContext);
     LogMan::Msg::DFmt("Rethrowing onto guest stack: {:X}", NativeContext->Sp);
     return true;
   } else {
@@ -842,6 +962,70 @@ NTSTATUS ResetToConsistentState(EXCEPTION_RECORD* Exception, CONTEXT* GuestConte
 
   if (Cont) {
     NtContinueNative(NativeContext, false);
+  }
+
+  // TODO: These are super incorrect for debug registers.
+  if constexpr (false) {
+    auto Thread = CPUArea.ThreadState();
+    auto& State = Thread->CurrentFrame->State;
+
+    if ((GuestContext->ContextFlags & CONTEXT_DEBUG_REGISTERS) == CONTEXT_DEBUG_REGISTERS) {
+      // If any of the debug register state changed then we need to invalidate.
+      const bool Dr0Changed = (GuestContext->Dr0 != State.Dr[0]) || ((GuestContext->Dr7 ^ State.Dr7) & ((0b1111 << 16) | (0b11 << 0)));
+      const bool Dr1Changed = (GuestContext->Dr1 != State.Dr[1]) || ((GuestContext->Dr7 ^ State.Dr7) & ((0b1111 << 20) | (0b11 << 2)));
+      const bool Dr2Changed = (GuestContext->Dr2 != State.Dr[2]) || ((GuestContext->Dr7 ^ State.Dr7) & ((0b1111 << 24) | (0b11 << 4)));
+      const bool Dr3Changed = (GuestContext->Dr3 != State.Dr[3]) || ((GuestContext->Dr7 ^ State.Dr7) & ((0b1111 << 28) | (0b11 << 6)));
+
+      if (Dr0Changed || Dr1Changed || Dr2Changed || Dr3Changed) {
+        std::scoped_lock Lock(ThreadCreationMutex);
+        // Need to clear both context and state addresses if changed.
+        // Only if the BP type was instruction class.
+        if (Dr0Changed) {
+          if (GuestContext->Dr0 && ((GuestContext->Dr7 >> 16) & 0b11) == 0) {
+            InvalidationTracker->InvalidateAlignedInterval(GuestContext->Dr0, 8, false);
+          }
+
+          if (State.Dr[0] && ((State.Dr7 >> 16) & 0b11) == 0) {
+            InvalidationTracker->InvalidateAlignedInterval(State.Dr[0], 8, false);
+          }
+        }
+        if (Dr1Changed) {
+          if (GuestContext->Dr1 && ((GuestContext->Dr7 >> 20) & 0b11) == 0) {
+            InvalidationTracker->InvalidateAlignedInterval(GuestContext->Dr1, 8, false);
+          }
+
+          if (State.Dr[1] && ((State.Dr7 >> 20) & 0b11) == 0) {
+            InvalidationTracker->InvalidateAlignedInterval(State.Dr[1], 8, false);
+          }
+        }
+        if (Dr2Changed) {
+          if (GuestContext->Dr2 && ((GuestContext->Dr7 >> 24) & 0b11) == 0) {
+            InvalidationTracker->InvalidateAlignedInterval(GuestContext->Dr2, 8, false);
+          }
+
+          if (State.Dr[2] && ((State.Dr7 >> 24) & 0b11) == 0) {
+            InvalidationTracker->InvalidateAlignedInterval(State.Dr[2], 8, false);
+          }
+        }
+        if (Dr3Changed) {
+          if (GuestContext->Dr3 && ((GuestContext->Dr7 >> 28) & 0b11) == 0) {
+            InvalidationTracker->InvalidateAlignedInterval(GuestContext->Dr3, 8, false);
+          }
+
+          if (State.Dr[3] && ((State.Dr7 >> 28) & 0b11) == 0) {
+            InvalidationTracker->InvalidateAlignedInterval(State.Dr[3], 8, false);
+          }
+        }
+      }
+
+      // Update context now that we have invalidated.
+      State.Dr[0] = GuestContext->Dr0;
+      State.Dr[1] = GuestContext->Dr1;
+      State.Dr[2] = GuestContext->Dr2;
+      State.Dr[3] = GuestContext->Dr3;
+      State.Dr6 = GuestContext->Dr6;
+      State.Dr7 = GuestContext->Dr7;
+    }
   }
 
   CPUArea.Area->InSimulation = false;
@@ -1038,6 +1222,7 @@ NTSTATUS ThreadInit() {
 
   FEX::Windows::CallRetStack::InitializeThread(Thread);
   Thread->CurrentFrame->Pointers.ExitFunctionEC = reinterpret_cast<uintptr_t>(&ExitFunctionEC);
+  Thread->CurrentFrame->Pointers.SynchronousExceptionHandler = reinterpret_cast<uintptr_t>(&Exception::SynchronousExceptionHandler);
   CPUArea.StateFrame() = Thread->CurrentFrame;
 
   uint64_t EnterEC = Thread->CurrentFrame->Pointers.DispatcherLoopTopEnterEC;
@@ -1046,7 +1231,7 @@ NTSTATUS ThreadInit() {
   uint64_t EnterECFillSRA = Thread->CurrentFrame->Pointers.DispatcherLoopTopEnterECFillSRA;
   CPUArea.DispatcherLoopTopEnterECFillSRA() = EnterECFillSRA;
 
-  CPUArea.ContextAmd64() = {.ContextFlags = CONTEXT_CONTROL | CONTEXT_SEGMENTS | CONTEXT_INTEGER | CONTEXT_FLOATING_POINT,
+  CPUArea.ContextAmd64() = {.ContextFlags = CONTEXT_CONTROL | CONTEXT_SEGMENTS | CONTEXT_INTEGER | CONTEXT_FLOATING_POINT | CONTEXT_DEBUG_REGISTERS,
                             .AMD64_SegCs = (FEXCore::Core::CPUState::DEFAULT_USER_CS << 3) | 3,
                             .AMD64_SegDs = 0x2b,
                             .AMD64_SegEs = 0x2b,

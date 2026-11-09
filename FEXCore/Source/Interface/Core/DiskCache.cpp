@@ -409,17 +409,24 @@ namespace DiskCache {
       uint64_t HostFeaturesHash;
     } MachineBucketData = {FormatVersion, HostFeatureHash.HostFeaturesHash};
 
-    fextl::vector<uint8_t> BucketBytes(sizeof(MachineBucketData) + (sizeof(uint8_t) * 2) + SerializedConfig.size());
+    uint8_t ProcessFeaturesHash {};
+    memcpy(&ProcessFeaturesHash, &HostFeatureHash.ProcessFeaturesHash, sizeof(ProcessFeaturesHash));
+    LogMan::Msg::IFmt("Disk Cache features:");
+    LogMan::Msg::IFmt("HostFeatures Hash: 0x{:016x}", HostFeatureHash.HostFeaturesHash);
+    LogMan::Msg::IFmt("ProcessFeaturesHash: 0x{:02x}", ProcessFeaturesHash);
+
+    fextl::vector<uint8_t> BucketBytes(sizeof(MachineBucketData) + sizeof(HostFeatureHash.ProcessFeaturesHash) + SerializedConfig.size());
     memcpy(BucketBytes.data(), &MachineBucketData, sizeof(MachineBucketData));
 
     // 64-bit mode and HostType is in the ProcessBucket hash only instead of the MachineBucketHash
     // These effect code-gen, but they aren't part of the MachineBucketHash, as it comes from Process state.
-    BucketBytes[sizeof(MachineBucketData)] = CTX->Config.Is64BitMode;
-    BucketBytes[sizeof(MachineBucketData) + 1] = FEXCore::ToUnderlying(HostFeatureHash.HostType);
-    memcpy(BucketBytes.data() + sizeof(MachineBucketData) + 2, SerializedConfig.data(), SerializedConfig.size());
+    memcpy(&BucketBytes[sizeof(MachineBucketData)], &HostFeatureHash.ProcessFeaturesHash, sizeof(HostFeatureHash.ProcessFeaturesHash));
+    memcpy(BucketBytes.data() + sizeof(MachineBucketData) + sizeof(HostFeatureHash.ProcessFeaturesHash), SerializedConfig.data(),
+           SerializedConfig.size());
 
     uint64_t MachineBucketHash = XXH3_64bits(BucketBytes.data(), sizeof(MachineBucketData));
-    uint64_t ProcessBucketHash = XXH3_64bits(BucketBytes.data() + sizeof(MachineBucketData), 2 + SerializedConfig.size());
+    uint64_t ProcessBucketHash =
+      XXH3_64bits(BucketBytes.data() + sizeof(MachineBucketData), sizeof(HostFeatureHash.ProcessFeaturesHash) + SerializedConfig.size());
     BucketHash.high64 = MachineBucketHash;
     BucketHash.low64 = ProcessBucketHash;
 

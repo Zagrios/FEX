@@ -9,6 +9,7 @@
 #include <windows.h>
 
 #include "CPUFeatures.h"
+#include "FEXUnixLib.h"
 
 namespace {
 
@@ -75,21 +76,24 @@ FEXCore::HostFeatures CPUFeatures::FetchHostFeatures(bool IsWine, FEXCore::HostF
     RegCloseKey(Key);
   }
 
-  FEX::FetchHostFeatures(Features, HostFeatures, !IsWine, CTR, MIDR);
+  FEX::FetchHostFeatures(Features, HostFeatures, IsWine, CTR, MIDR);
 
   // Force-disable SVE until wine/windows gain support for SVE context save/restore
-  HostFeatures.SupportsSVE128 = false;
-  HostFeatures.SupportsSVE256 = false;
+  HostFeatures.ProcessFeatures.SupportsSVE128 = false;
+  HostFeatures.ProcessFeatures.SupportsSVE256 = false;
 
-  HostFeatures.SupportsCPUIndexInTPIDRRO = !IsWine;
+  HostFeatures.SupportsCPUIndexInTPIDRRO = !IsWine || FEX::Windows::UnixLib::SupportsTPIDRRO_CPU();
 
-  HostFeatures.HostType = HostType;
   HostFeatures.ProcessPID = ProcessPID;
 
-  if (HostType == FEXCore::HostFeatures::HostTypeEnum::Wow64) {
-    // AVX is unsupported for WOW64
-    HostFeatures.SupportsAVX = false;
-  }
+  // AVX is unsupported for WOW64
+  HostFeatures.ProcessFeatures.SupportsAVX = HostType == FEXCore::HostFeatures::HostTypeEnum::Arm64ec;
+
+  HostFeatures.ProcessFeatures.HostType = HostType;
+  HostFeatures.ProcessFeatures.Is64BitMode = HostType == FEXCore::HostFeatures::HostTypeEnum::Arm64ec;
+  // arm64ec supports synchronous faults without a double-fault dance.
+  HostFeatures.ProcessFeatures.SupportsFaultFreeSynchronousFaults = HostType == FEXCore::HostFeatures::HostTypeEnum::Arm64ec;
+
   return HostFeatures;
 }
 

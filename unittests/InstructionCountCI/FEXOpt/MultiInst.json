@@ -13,36 +13,12 @@
       "RPRES",
       "AFP"
     ],
-    "BinaryCacheVersion": 30
+    "BinaryCacheVersion": 43
   },
   "Comment": [
     "These are instruction combinations that could be more optimal if FEX optimized for them"
   ],
   "Instructions": {
-    "cpuid constant": {
-      "x86InstructionCount": 2,
-      "ExpectedInstructionCount": 11,
-      "Comment": [
-        "CPUID function call with constant function id"
-      ],
-      "x86Insts": [
-        "mov rax, 0",
-        "cpuid"
-      ],
-      "ExpectedArm64ASM": [
-        "mov w4, #0x0",
-        "isb",
-        "mov w20, #0x16",
-        "mov w6, #0x6547",
-        "movk w6, #0x756e, lsl #16",
-        "mov w21, #0x746e",
-        "movk w21, #0x6c65, lsl #16",
-        "mov w5, #0x6e69",
-        "movk w5, #0x4965, lsl #16",
-        "mov x7, x21",
-        "mov x4, x20"
-      ]
-    },
     "xgetbv constant": {
       "x86InstructionCount": 2,
       "ExpectedInstructionCount": 3,
@@ -1719,6 +1695,44 @@
         "ldr q2, [sp, #64]",
         "stp q14, q2, [x28, #192]",
         "add sp, sp, #0xa0 (160)"
+      ]
+    },
+    "cmp with memory and dead flags keeps the load": {
+      "x86InstructionCount": 2,
+      "ExpectedInstructionCount": 5,
+      "Comment": [
+        "Compare against memory with the flags overwritten before any read.",
+        "The compare can go but the load has to stay: it may fault, and HotSpot's C1",
+        "null check is exactly this shape (cmp rax, [reg] with dead flags)."
+      ],
+      "x86Insts": [
+        "cmp rax, [rdx]",
+        "add qword [rsi + 0x128], 1"
+      ],
+      "ExpectedArm64ASM": [
+        "ldr x20, [x5]",
+        "ldr x27, [x10, #296]",
+        "adds x26, x27, #0x1 (1)",
+        "str x26, [x10, #296]",
+        "cfinv"
+      ]
+    },
+    "test with memory and dead flags keeps the load": {
+      "x86InstructionCount": 2,
+      "ExpectedInstructionCount": 5,
+      "Comment": [
+        "Same as the dead compare, test against memory: the shape of a HotSpot C2 safepoint poll."
+      ],
+      "x86Insts": [
+        "test rax, [rdx]",
+        "add qword [rsi + 0x128], 1"
+      ],
+      "ExpectedArm64ASM": [
+        "ldr x20, [x5]",
+        "ldr x27, [x10, #296]",
+        "adds x26, x27, #0x1 (1)",
+        "str x26, [x10, #296]",
+        "cfinv"
       ]
     }
   }

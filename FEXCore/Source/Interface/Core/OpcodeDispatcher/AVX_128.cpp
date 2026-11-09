@@ -2067,7 +2067,7 @@ OpDispatchBuilder::RefPair OpDispatchBuilder::AVX128_VPGatherImpl(OpcodeArgs, Op
     BaseAddr = Invalid();
   }
 
-  if (CTX->HostFeatures.SupportsSVE128) {
+  if (CTX->HostFeatures.SupportsSVE128()) {
     if (ElementLoadSize == OpSize::i64Bit && AddrElementSize == OpSize::i32Bit) {
       // In the case that FEX is loading double the amount of data than the number of address bits then we can optimize this case.
       // For 256-bits of data we need to sign extend all four 32-bit address elements to be 64-bit.
@@ -2170,7 +2170,7 @@ OpDispatchBuilder::RefPair OpDispatchBuilder::AVX128_VPGatherQPSImpl(OpcodeArgs,
 
   bool NeedsSVEScale = (VSIB.Scale == 2 || VSIB.Scale == 8) || (BaseAddr == Invalid() && VSIB.Scale != 1);
 
-  if (CTX->HostFeatures.SupportsSVE128 && NeedsSVEScale) {
+  if (CTX->HostFeatures.SupportsSVE128() && NeedsSVEScale) {
     // SVE gather instructions don't support scaling their vector elements by anything other than 1 or the address element size.
     // Pre-scale 64-bit addresses in the case that scale doesn't match in-order to hit SVE code paths more frequently.
     // Only hit this path if the host supports SVE. Otherwise it's a degradation for the ASIMD codepath.
@@ -2236,7 +2236,7 @@ void OpDispatchBuilder::AVX128_VPGATHER(OpcodeArgs, OpSize AddrElementSize) {
   bool NeedsSVEScale = (VSIB.Scale == 2 || VSIB.Scale == 8) || (VSIB.BaseAddr == Invalid() && VSIB.Scale != 1);
 
   const bool NeedsExplicitSVEPath =
-    CTX->HostFeatures.SupportsSVE128 && AddrElementSize == OpSize::i32Bit && ElementLoadSize == OpSize::i32Bit && NeedsSVEScale;
+    CTX->HostFeatures.SupportsSVE128() && AddrElementSize == OpSize::i32Bit && ElementLoadSize == OpSize::i32Bit && NeedsSVEScale;
 
   RefPair Result {};
   if (NeedsExplicitSVEPath) {
@@ -2353,6 +2353,126 @@ void OpDispatchBuilder::AVX128_VCVTPS2PH(OpcodeArgs) {
   } else {
     AVX128_StoreResult_WithOpSize(Op, Op->Dest, Result);
   }
+}
+
+void OpDispatchBuilder::AVX128_VBCSTNEBF162PS(OpcodeArgs) {
+  const auto DstSize = GetDstSize(Op);
+  const auto Is128Bit = DstSize == Core::CPUState::XMM_SSE_REG_SIZE;
+
+  auto Src1 = LoadSourceFPR_WithOpSize(Op, Op->Src[0], OpSize::i16Bit, Op->Flags);
+
+  // bfloat16 is converted to fp32 and broadcast through the vector.
+  // bfloat16->float32 is left-shift by 16.
+  Src1 = _VShlI(OpSize::i128Bit, OpSize::i32Bit, Src1, 16);
+  Src1 = _VDupElement(OpSize::i128Bit, OpSize::i32Bit, Src1, 0);
+
+  RefPair Result {};
+  Result.Low = Src1;
+
+  if (Is128Bit) {
+    Result.High = LoadZeroVector(OpSize::i128Bit);
+  } else {
+    Result.High = Result.Low;
+  }
+  AVX128_StoreResult_WithOpSize(Op, Op->Dest, Result);
+}
+
+void OpDispatchBuilder::AVX128_VBCSTNESH2PS(OpcodeArgs) {
+  const auto DstSize = GetDstSize(Op);
+  const auto Is128Bit = DstSize == Core::CPUState::XMM_SSE_REG_SIZE;
+
+  auto Src1 = LoadSourceFPR_WithOpSize(Op, Op->Src[0], OpSize::i16Bit, Op->Flags);
+
+  // float16 is converted to fp32 and broadcast through the vector.
+  Src1 = _Float_FToF(OpSize::i32Bit, OpSize::i16Bit, Src1);
+  Src1 = _VDupElement(OpSize::i128Bit, OpSize::i32Bit, Src1, 0);
+
+  RefPair Result {};
+  Result.Low = Src1;
+
+  if (Is128Bit) {
+    Result.High = LoadZeroVector(OpSize::i128Bit);
+  } else {
+    Result.High = Result.Low;
+  }
+  AVX128_StoreResult_WithOpSize(Op, Op->Dest, Result);
+}
+
+void OpDispatchBuilder::AVX128_VCVTNEEBF162PS(OpcodeArgs, bool Even) {
+  const auto DstSize = GetDstSize(Op);
+  const auto Is128Bit = DstSize == Core::CPUState::XMM_SSE_REG_SIZE;
+
+  auto Src = AVX128_LoadSource_WithOpSize(Op, Op->Src[0], Op->Flags, !Is128Bit);
+
+  RefPair Result {};
+
+  auto Convert = [&](auto Src, bool Even) -> Ref {
+    // Even or odd elements of each 128-bit register is converted from bfloat16 to float32.
+    // For even, just left shift the elements.
+    if (Even) {
+      return _VShlI(OpSize::i128Bit, OpSize::i32Bit, Src, 16);
+    }
+
+    // For Odds, we just need to mask off the lower 16-bits of each 32-bit element.
+    // Easiest way to do this is with a right then left shift.
+    auto Tmp = _VUShrI(OpSize::i128Bit, OpSize::i32Bit, Src, 16);
+    return _VShlI(OpSize::i128Bit, OpSize::i32Bit, Tmp, 16);
+  };
+
+  Result.Low = Convert(Src.Low, Even);
+
+  if (Is128Bit) {
+    Result.High = LoadZeroVector(OpSize::i128Bit);
+  } else {
+    Result.High = Convert(Src.High, Even);
+  }
+  AVX128_StoreResult_WithOpSize(Op, Op->Dest, Result);
+}
+
+void OpDispatchBuilder::AVX128_VCVTNEEPH2PS(OpcodeArgs, bool Even) {
+  const auto DstSize = GetDstSize(Op);
+  const auto Is128Bit = DstSize == Core::CPUState::XMM_SSE_REG_SIZE;
+
+  auto Src = AVX128_LoadSource_WithOpSize(Op, Op->Src[0], Op->Flags, !Is128Bit);
+
+  RefPair Result {};
+
+  auto Convert = [&](auto Src, bool Even) -> Ref {
+    // Transpose even or odd elements and then fcvtl.
+    if (Even) {
+      Src = _VUnZip(OpSize::i128Bit, OpSize::i16Bit, Src, Src);
+    } else {
+      Src = _VUnZip2(OpSize::i128Bit, OpSize::i16Bit, Src, Src);
+    }
+    return _Vector_FToF(OpSize::i128Bit, OpSize::i32Bit, Src, OpSize::i16Bit);
+  };
+
+  Result.Low = Convert(Src.Low, Even);
+
+  if (Is128Bit) {
+    Result.High = LoadZeroVector(OpSize::i128Bit);
+  } else {
+    Result.High = Convert(Src.High, Even);
+  }
+  AVX128_StoreResult_WithOpSize(Op, Op->Dest, Result);
+}
+
+void OpDispatchBuilder::AVX128_VCVTNEPS2BF16(OpcodeArgs) {
+  const auto SrcSize = OpSizeFromSrc(Op);
+  const auto Is128BitSrc = SrcSize == OpSize::i128Bit;
+  auto Src = AVX128_LoadSource_WithOpSize(Op, Op->Src[0], Op->Flags, !Is128BitSrc);
+
+  // Convert 4 or 8 32-bits floats in to bfloat16.
+  // This instruction only operates with rounding mode set to `Rounds to Nearest (even)`.
+
+  RefPair Result {};
+  Result.Low = _VBFCVTN(OpSize::i128Bit, Src.Low);
+  if (!Is128BitSrc) {
+    Result.Low = _VBFCVTN2(OpSize::i128Bit, Result.Low, Src.High);
+  }
+
+  Result.High = LoadZeroVector(OpSize::i128Bit);
+  AVX128_StoreResult_WithOpSize(Op, Op->Dest, Result);
 }
 
 } // namespace FEXCore::IR

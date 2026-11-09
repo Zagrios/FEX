@@ -556,6 +556,8 @@ int main(int argc, char** argv, char** const envp) {
     FEATURE_MOPS = (1U << 17),
     FEATURE_I8MM = (1U << 18),
     FEATURE_DOTPROD = (1U << 19),
+    FEATURE_BF16 = (1U << 20),
+    FEATURE_TPIDRRO = (1U << 21),
   };
 
   uint64_t SVEWidth = 0;
@@ -614,6 +616,12 @@ int main(int argc, char** argv, char** const envp) {
   }
   if (TestHeaderData->EnabledHostFeatures & FEATURE_DOTPROD) {
     HostFeatureControl |= static_cast<uint64_t>(FEXCore::Config::HostFeatures::ENABLEDOTPROD);
+  }
+  if (TestHeaderData->EnabledHostFeatures & FEATURE_BF16) {
+    HostFeatureControl |= static_cast<uint64_t>(FEXCore::Config::HostFeatures::ENABLEBF16);
+  }
+  if (TestHeaderData->EnabledHostFeatures & FEATURE_TPIDRRO) {
+    HostFeatureControl |= static_cast<uint64_t>(FEXCore::Config::HostFeatures::ENABLETPIDRRO);
   }
 
   if (TestHeaderData->EnabledHostFeatures & FEATURE_TSO) {
@@ -679,6 +687,12 @@ int main(int argc, char** argv, char** const envp) {
   if (TestHeaderData->DisabledHostFeatures & FEATURE_DOTPROD) {
     HostFeatureControl |= static_cast<uint64_t>(FEXCore::Config::HostFeatures::DISABLEDOTPROD);
   }
+  if (TestHeaderData->DisabledHostFeatures & FEATURE_BF16) {
+    HostFeatureControl |= static_cast<uint64_t>(FEXCore::Config::HostFeatures::DISABLEBF16);
+  }
+  if (TestHeaderData->DisabledHostFeatures & FEATURE_TPIDRRO) {
+    HostFeatureControl |= static_cast<uint64_t>(FEXCore::Config::HostFeatures::DISABLETPIDRRO);
+  }
 
   if (TestHeaderData->DisabledHostFeatures & FEATURE_TSO) {
     FEXCore::Config::Set(FEXCore::Config::ConfigOption::CONFIG_TSOENABLED, "0");
@@ -695,7 +709,7 @@ int main(int argc, char** argv, char** const envp) {
   // Create FEXCore context.
   fextl::unique_ptr<FEXCore::Context::Context> CTX;
   {
-    auto HostFeatures = FEX::FetchHostFeatures();
+    auto HostFeatures = FEX::FetchHostFeatures(TestHeaderData->Bitness == 64);
     HostFeatures.IsInstCountCI = true;
     CTX = FEXCore::Context::Context::CreateNewContext(HostFeatures);
   }

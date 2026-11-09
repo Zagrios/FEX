@@ -629,7 +629,8 @@ void Dispatcher::EmitDispatcher() {
     ldr(TMP2, STATE, offsetof(FEXCore::Core::CPUState, CoreFlags));
     (void)tbz(TMP2, FEXCore::ilog2(FEXCore::ToUnderlying(FEXCore::Core::CoreFlagsEnum::CPUID_ENABLED)), &SetupCPUIDFault);
 
-    // TMP1 passes the instruction size. Usually only 2-bytes but prefixes can make it 15.
+    // TMP1 passes the offset to the next instruction: the instruction size, usually only 2 bytes but prefixes can make
+    // it 15, or less 4 GiB when 32-bit code wraps EIP to 0 (see OpDispatchBuilder::CPUIDOp).
     ldr(TMP2, STATE_PTR(CpuStateFrame, State.rip));
     add(TMP2, TMP2, TMP1);
     str(TMP2, STATE_PTR(CpuStateFrame, State.rip));

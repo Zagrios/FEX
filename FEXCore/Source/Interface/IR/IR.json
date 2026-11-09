@@ -337,8 +337,11 @@
         "HasSideEffects": true
       },
 
-      "CPUID i8:$InstSize": {
-        "Desc": ["Calls in to the CPUID handler function to return emulated CPUID"],
+      "CPUID i64:$RIPDelta": {
+        "Desc": ["Calls in to the CPUID handler function to return emulated CPUID",
+                 "RIPDelta is added to RIP to reach the next instruction: the instruction size, less 4 GiB when 32-bit code",
+                 "wraps EIP to 0"
+                ],
         "HasSideEffects": true
       },
       "GPR:$EAX, GPR:$EDX = XGetBV GPR:$Function": {

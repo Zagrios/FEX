@@ -1425,7 +1425,12 @@ void OpDispatchBuilder::CPUIDOp(OpcodeArgs) {
   _StoreContextGPR(GPRSize, NewRIP, offsetof(FEXCore::Core::CPUState, rip));
 
   FlushRegisterCache();
-  _CPUID(Op->InstSize);
+
+  // Darwin port: the CPUID handler adds this to RIP with a 64-bit add. In 32-bit code EIP wraps from 0xFFFFFFFF to 0,
+  // so a CPUID that ends at 4 GiB continues at 0, as the decoder's blocks do (NCGuard runs one at 0xFFFFFFFE and expects
+  // the fault at 0). Op->PC is the guest address, so the wrap is known when the block is translated.
+  const uint64_t RIPDelta = Is64BitMode ? Op->InstSize : static_cast<uint32_t>(Op->PC + Op->InstSize) - Op->PC;
+  _CPUID(RIPDelta);
 }
 
 uint32_t OpDispatchBuilder::GetConstantShift(X86Tables::DecodedOp Op, bool Is1Bit) {

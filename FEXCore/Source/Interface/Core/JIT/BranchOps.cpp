@@ -431,7 +431,7 @@ DEF_OP(CPUID) {
 
   SpillStaticRegs(TMP1);
 
-  LoadConstant(ARMEmitter::Size::i32Bit, TMP1, Op->InstSize);
+  LoadConstant(ARMEmitter::Size::i64Bit, TMP1, static_cast<uint64_t>(Op->RIPDelta));
   // Jump to the syscall dispatch handler. We won't return after this.
   ldr(TMP2, STATE, offsetof(FEXCore::Core::CpuStateFrame, Pointers.ThreadDispatchCPUIDHandler));
   br(TMP2);

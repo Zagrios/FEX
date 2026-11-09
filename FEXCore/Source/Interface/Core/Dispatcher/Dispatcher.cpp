@@ -554,6 +554,11 @@ void Dispatcher::EmitDispatcher() {
     ldrb(TMP1, STATE_PTR(CpuStateFrame, State.flags[X86State::RFLAG_TF_RAW_LOC]));
     (void)cbnz(ARMEmitter::Size::i32Bit, TMP1, &LoopTop);
 
+    // Darwin port: guest address 0 marks the empty L1 entries, and the invalidated ones keep a stale host address.
+    // A sigreturn to address 0 (Themida raises an exception that way) would match one and jump to host address 0 or
+    // to stale code: it takes the full lookup, as ExitFunction does.
+    (void)cbz(ARMEmitter::Size::i64Bit, TMP3, &LoopTop);
+
     ldp<ARMEmitter::IndexType::OFFSET>(TMP1, TMP2, STATE, offsetof(FEXCore::Core::CpuStateFrame, State.L1Pointer));
 
     if (rip_offset) {

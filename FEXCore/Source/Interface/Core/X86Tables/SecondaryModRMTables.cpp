@@ -74,7 +74,8 @@ constexpr std::array<X86InstInfo, MAX_SECOND_MODRM_TABLE_SIZE> SecondModRMTableO
     {((4 << 3) | 3), 1, X86InstInfo{"",         TYPE_INVALID, FLAGS_NONE, 0}},
     {((4 << 3) | 4), 1, X86InstInfo{"",         TYPE_INVALID, FLAGS_NONE, 0}},
     {((4 << 3) | 5), 1, X86InstInfo{"",         TYPE_INVALID, FLAGS_NONE, 0}},
-    {((4 << 3) | 6), 1, X86InstInfo{"RDPKRU",   TYPE_INVALID, FLAGS_NONE, 0}}, // #UD: PKU is not advertised
+    // RDPKRU and WRPKRU: #UD, PKU is not advertised.
+    {((4 << 3) | 6), 1, X86InstInfo{"RDPKRU",   TYPE_INVALID, FLAGS_NONE, 0}},
     {((4 << 3) | 7), 1, X86InstInfo{"WRPKRU",   TYPE_INVALID, FLAGS_NONE, 0}},
   };
 

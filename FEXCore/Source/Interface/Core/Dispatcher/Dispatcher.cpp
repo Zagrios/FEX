@@ -555,8 +555,9 @@ void Dispatcher::EmitDispatcher() {
     (void)cbnz(ARMEmitter::Size::i32Bit, TMP1, &LoopTop);
 
     // Darwin port: guest address 0 marks the empty L1 entries, and the invalidated ones keep a stale host address.
-    // A sigreturn to address 0 (Themida raises an exception that way) would match one and jump to host address 0 or
-    // to stale code: it takes the full lookup, as ExitFunction does.
+    // A system call that sets RIP to 0 (rt_sigreturn, ptrace SETREGS), or a CPUID in 32-bit code that ends at 4 GiB
+    // (EIP wraps to 0), would match one and jump to host address 0 or to stale code: RIP 0 takes the full lookup, as
+    // ExitFunction does.
     (void)cbz(ARMEmitter::Size::i64Bit, TMP3, &LoopTop);
 
     ldp<ARMEmitter::IndexType::OFFSET>(TMP1, TMP2, STATE, offsetof(FEXCore::Core::CpuStateFrame, State.L1Pointer));

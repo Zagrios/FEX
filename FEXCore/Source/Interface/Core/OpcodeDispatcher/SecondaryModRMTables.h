@@ -18,6 +18,7 @@ constexpr DispatchTableEntry OpDispatch_SecondaryModRMTables[] = {
 
   // REG /5
   {((4 << 3) | 0), 1, &OpDispatchBuilder::SerializeOp},
+
   // REG /7
   {((3 << 3) | 1), 1, &OpDispatchBuilder::RDTSCPOp},
   {((3 << 3) | 4), 1, &OpDispatchBuilder::CLZeroOp},

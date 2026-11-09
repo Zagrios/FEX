@@ -5012,7 +5012,7 @@ void OpDispatchBuilder::VERWOp(OpcodeArgs) {
     _Select(OpSize::i32Bit, OpSize::i32Bit, CondClass::EQ, Masked, Constant(0x28), Constant(1), Constant(0)));
 }
 
-// SLDT and STR write a selector: 16 bits to memory, zero-extended to a register.
+// STR writes a selector: 16 bits to memory, zero-extended to a register.
 void OpDispatchBuilder::StoreSegmentQuery(OpcodeArgs, Ref Value) {
   auto DstSize = DestIsMem(Op) ? OpSize::i16Bit : OpSizeFromDst(Op);
   if (DstSize == OpSize::i32Bit) {

@@ -315,6 +315,10 @@ DEF_OP(CondJump) {
 DEF_OP(Syscall) {
   SpillStaticRegs(TMP1);
 
+  // The dispatcher goes on to the next block, which allocates its own spill slots: free this block's, as
+  // ExitFunction does, or each system call leaves them on the host stack.
+  ResetStack();
+
   // Jump to the syscall dispatch handler. We won't return after this.
   ldr(TMP1, STATE, offsetof(FEXCore::Core::CpuStateFrame, Pointers.ThreadDispatchSyscallHandler));
   br(TMP1);
@@ -410,6 +414,10 @@ DEF_OP(ThreadRemoveCodeEntry) {
 
   SpillStaticRegs(TMP1);
 
+  // Like Syscall, the block ends here: free its spill slots (before TMP1 or the argument registers are set, which a
+  // large spill area's ResetStack may use).
+  ResetStack();
+
   // Store the new RIP to go to.
   str(GetReg(Op->NewRIP).X(), STATE, offsetof(FEXCore::Core::CpuStateFrame, State.rip));
 
@@ -430,6 +438,9 @@ DEF_OP(CPUID) {
   auto Op = IROp->C<IR::IROp_CPUID>();
 
   SpillStaticRegs(TMP1);
+
+  // Like Syscall, the block ends here: free its spill slots.
+  ResetStack();
 
   LoadConstant(ARMEmitter::Size::i64Bit, TMP1, static_cast<uint64_t>(Op->RIPDelta));
   // Jump to the syscall dispatch handler. We won't return after this.
